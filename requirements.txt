@@ -6,3 +6,4 @@ pydantic==2.11.9
 streamlit==1.39.0
 pandas==2.2.3
 requests==2.32.5
+odfpy==1.4.1

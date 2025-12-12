@@ -293,22 +293,41 @@ with tab2:
 with tab3:
     st.header("Upload competitor pricing table")
     st.markdown(
-        "Upload a CSV/XLSX with **one row per day**. The first column must be `date`. "
+        "Upload a spreadsheet with **one row per day**. The first column must be `date`. "
         "All other columns should be competitor prices. You can either:\n"
         "- Use columns like `COMP_A`, `COMP_B` (single room category), or\n"
-        "- Use columns like `double__COMP_A`, `double__COMP_B`, `triple__COMP_A` (multiple room categories)."
+        "- Use columns like `double__COMP_A`, `double__COMP_B`, `triple__COMP_A` (multiple room categories).\n\n"
+        "Supported formats: CSV, XLSX, ODS."
     )
+
+    # Convenience: load the bundled file if present
+    default_ods_path = REPO_ROOT / "competitor" / "Competitors.ods"
+    if default_ods_path.exists():
+        if st.button("Load bundled competitor/Competitors.ods", use_container_width=True):
+            try:
+                df_raw = pd.read_excel(default_ods_path, engine="odf")
+                df_raw.columns = [str(c).strip() for c in df_raw.columns]
+                st.session_state["uploaded_competitor_prices"] = df_raw
+                st.success(f"Loaded bundled file: {default_ods_path.name}")
+            except Exception as e:
+                st.error(
+                    "Failed to read ODS. Ensure dependency 'odfpy' is installed (required for .ods). "
+                    f"Details: {e}"
+                )
 
     uploaded = st.file_uploader(
         "Upload file",
-        type=["csv", "xlsx"],
-        help="CSV recommended. Date format: YYYY-MM-DD.",
+        type=["csv", "xlsx", "ods"],
+        help="Date format: YYYY-MM-DD.",
     )
 
     if uploaded is not None:
         try:
-            if uploaded.name.lower().endswith(".csv"):
+            name = uploaded.name.lower()
+            if name.endswith(".csv"):
                 df_raw = pd.read_csv(uploaded)
+            elif name.endswith(".ods"):
+                df_raw = pd.read_excel(uploaded, engine="odf")
             else:
                 df_raw = pd.read_excel(uploaded)
 
@@ -330,7 +349,10 @@ with tab3:
             st.dataframe(df_raw.head(50), use_container_width=True)
 
         except Exception as e:
-            st.error(f"Failed to parse upload: {e}")
+            st.error(
+                "Failed to parse upload. For ODS files on Streamlit Cloud, you must add 'odfpy' to requirements. "
+                f"Details: {e}"
+            )
 
     df_uploaded = st.session_state.get("uploaded_competitor_prices")
     if df_uploaded is None:
