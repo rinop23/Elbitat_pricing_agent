@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local env
+.env
+
+# Local DB / outputs
+pricing_agent.db
+backend/pricing_agent.db
+backend/app/db.sqlite
+pricing_output/
+
+# OS
+Thumbs.db

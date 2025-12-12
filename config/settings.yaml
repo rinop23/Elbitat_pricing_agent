@@ -1,0 +1,21 @@
+hotel:
+  name: "My Hotel"
+  currency: EUR
+  property_id: ""      # Simple Booking property id (leave blank for now)
+  rate_plan_id: "BAR"  # your main public rate plan
+  timezone: "Europe/Rome"
+
+pricing:
+  min_rate: 80.0
+  max_rate: 300.0
+  weekend_uplift: 10.0
+  undercut: 0.0        # negative = undercut competitors, positive = markup
+  lead_buckets:
+    7: 0
+    21: -5
+    60: -10
+  max_change_pct: 0.10 # max +/-10% change per run
+
+run:
+  horizon_days: 120
+  occupancy: 2
