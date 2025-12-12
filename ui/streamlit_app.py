@@ -69,6 +69,42 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --------------------
+# Simple login gate
+# --------------------
+APP_USERNAME = os.getenv("APP_USERNAME", "admin")
+APP_PASSWORD = os.getenv("APP_PASSWORD", "admin")
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+
+def _show_login():
+    st.title("🔐 Login")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign in")
+
+    if submitted:
+        if username == APP_USERNAME and password == APP_PASSWORD:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Invalid username or password")
+
+
+if not st.session_state["authenticated"]:
+    _show_login()
+    st.stop()
+
+# Sidebar logout
+with st.sidebar:
+    st.caption("Logged in")
+    if st.button("Logout"):
+        st.session_state["authenticated"] = False
+        st.rerun()
+
 # Main title
 st.title("🏨 Hotel Pricing Agent")
 
