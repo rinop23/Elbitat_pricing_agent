@@ -109,7 +109,13 @@ with st.sidebar:
 st.title("🏨 Hotel Pricing Agent")
 
 # Create tabs for different sections
-tab1, tab2, tab3 = st.tabs(["📊 Pricing Dashboard", "🏢 Competitor Management", "⚙️ Settings"])
+# Add a new tab for competitor price upload/analysis
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 Pricing Dashboard",
+    "🏢 Competitor Management",
+    "📥 Competitor Price Upload",
+    "⚙️ Settings",
+])
 
 # ==================== TAB 1: PRICING DASHBOARD ====================
 with tab1:
@@ -283,8 +289,107 @@ with tab2:
     except Exception as e:
         st.error(f"❌ Error loading competitors: {str(e)}")
 
-# ==================== TAB 3: SETTINGS ====================
+# ==================== TAB 3: COMPETITOR PRICE UPLOAD ====================
 with tab3:
+    st.header("Upload competitor pricing table")
+    st.markdown(
+        "Upload a CSV/XLSX with **one row per day**. The first column must be `date`. "
+        "All other columns should be competitor prices. You can either:\n"
+        "- Use columns like `COMP_A`, `COMP_B` (single room category), or\n"
+        "- Use columns like `double__COMP_A`, `double__COMP_B`, `triple__COMP_A` (multiple room categories)."
+    )
+
+    uploaded = st.file_uploader(
+        "Upload file",
+        type=["csv", "xlsx"],
+        help="CSV recommended. Date format: YYYY-MM-DD.",
+    )
+
+    if uploaded is not None:
+        try:
+            if uploaded.name.lower().endswith(".csv"):
+                df_raw = pd.read_csv(uploaded)
+            else:
+                df_raw = pd.read_excel(uploaded)
+
+            # Normalize columns
+            df_raw.columns = [str(c).strip() for c in df_raw.columns]
+            if "date" not in [c.lower() for c in df_raw.columns]:
+                st.error("Missing required column: date")
+                st.stop()
+
+            # Find the actual date column name (case-insensitive)
+            date_col = next(c for c in df_raw.columns if c.lower() == "date")
+            df_raw[date_col] = pd.to_datetime(df_raw[date_col], errors="coerce").dt.date
+            df_raw = df_raw.dropna(subset=[date_col])
+
+            # Keep a copy in session
+            st.session_state["uploaded_competitor_prices"] = df_raw
+
+            st.success(f"Loaded {len(df_raw)} rows")
+            st.dataframe(df_raw.head(50), use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Failed to parse upload: {e}")
+
+    df_uploaded = st.session_state.get("uploaded_competitor_prices")
+    if df_uploaded is None:
+        st.info("Upload a file to compute daily lowest/avg/highest competitor prices.")
+    else:
+        date_col = next(c for c in df_uploaded.columns if c.lower() == "date")
+        value_cols = [c for c in df_uploaded.columns if c != date_col]
+
+        # Detect room categories by `room__competitor` pattern
+        room_cols = {}
+        for col in value_cols:
+            if "__" in col:
+                room, comp = col.split("__", 1)
+                room = room.strip().lower()
+                comp = comp.strip()
+                room_cols.setdefault(room, []).append(col)
+            else:
+                room_cols.setdefault("default", []).append(col)
+
+        rooms = sorted(room_cols.keys())
+        selected_room = st.selectbox("Room category", options=rooms, index=0)
+
+        # Compute daily stats for selected room
+        df_room = df_uploaded[[date_col] + room_cols[selected_room]].copy()
+
+        # Coerce numeric
+        for c in room_cols[selected_room]:
+            df_room[c] = pd.to_numeric(df_room[c], errors="coerce")
+
+        df_room["lowest"] = df_room[room_cols[selected_room]].min(axis=1, skipna=True)
+        df_room["average"] = df_room[room_cols[selected_room]].mean(axis=1, skipna=True)
+        df_room["highest"] = df_room[room_cols[selected_room]].max(axis=1, skipna=True)
+
+        df_stats = df_room[[date_col, "lowest", "average", "highest"]].sort_values(date_col)
+
+        st.subheader("Daily summary")
+        st.dataframe(df_stats, use_container_width=True, hide_index=True)
+
+        st.subheader("Summary metrics")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("Avg lowest", f"{df_stats['lowest'].mean():.2f}" if df_stats["lowest"].notna().any() else "-")
+        with c2:
+            st.metric("Avg average", f"{df_stats['average'].mean():.2f}" if df_stats["average"].notna().any() else "-")
+        with c3:
+            st.metric("Avg highest", f"{df_stats['highest'].mean():.2f}" if df_stats["highest"].notna().any() else "-")
+
+        # Optional download
+        csv_bytes = df_stats.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download daily summary (CSV)",
+            data=csv_bytes,
+            file_name=f"competitor_summary_{selected_room}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+# ==================== TAB 4: SETTINGS ====================
+with tab4:
     st.header("Configuration Settings")
     st.markdown("Configure your hotel pricing parameters and system settings.")
 
