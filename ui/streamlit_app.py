@@ -1,14 +1,39 @@
 import os
 import pandas as pd
 import streamlit as st
-import requests
 from datetime import date, timedelta
+
+# Single-process mode: use backend services directly (no FastAPI required)
+# Ensure repo root is on sys.path so `backend.app` imports work when running `streamlit run ui/streamlit_app.py`
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from backend.app.services.competitor_service import (  # noqa: E402
+    init_db,
+    add_competitor,
+    list_competitors,
+    delete_competitor,
+)
+from backend.app.services.pricing_service import (  # noqa: E402
+    create_run,
+    run_pricing,
+    save_recommendations,
+    get_recommendations,
+)
+from backend.app.core.config import AppConfig  # noqa: E402
+
+# Initialize local DB (SQLite) once
+init_db()
 
 # Page configuration
 st.set_page_config(
     page_title="Hotel Pricing Agent",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # Custom CSS for better UI
@@ -44,32 +69,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# API base URL (adjust if backend runs on different port)
-API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
-
-
-def _api_url(path: str) -> str:
-    return f"{API_BASE_URL}{path}"
-
-
-def _get_json(path: str, *, params=None):
-    r = requests.get(_api_url(path), params=params, timeout=60)
-    r.raise_for_status()
-    return r.json()
-
-
-def _post_json(path: str, *, payload=None):
-    r = requests.post(_api_url(path), json=payload, timeout=120)
-    r.raise_for_status()
-    return r.json()
-
-
-def _delete(path: str):
-    r = requests.delete(_api_url(path), timeout=60)
-    r.raise_for_status()
-    return r.json() if r.content else {"ok": True}
-
-
 # Main title
 st.title("🏨 Hotel Pricing Agent")
 
@@ -80,19 +79,11 @@ tab1, tab2, tab3 = st.tabs(["📊 Pricing Dashboard", "🏢 Competitor Managemen
 with tab1:
     st.header("Generate Pricing Recommendations")
 
-    # Fetch defaults from backend (best-effort). Fall back to safe defaults.
-    try:
-        cfg = _get_json("/config")
-    except Exception:
-        cfg = {
-            "hotel": {"currency": os.getenv("CURRENCY", "EUR")},
-            "run": {"horizon_days": 120, "occupancy": 2},
-            "pricing": {"min_rate": 0, "max_rate": 0, "weekend_uplift": 0, "undercut": 0, "max_change_pct": 0.1},
-        }
-
-    currency = (cfg.get("hotel") or {}).get("currency", os.getenv("CURRENCY", "EUR"))
-    default_horizon = int((cfg.get("run") or {}).get("horizon_days", 120))
-    default_occupancy = int((cfg.get("run") or {}).get("occupancy", 2))
+    # Load defaults from config (local)
+    cfg_obj = AppConfig()
+    currency = cfg_obj.currency
+    default_horizon = int(cfg_obj.horizon_days)
+    default_occupancy = int(cfg_obj.occupancy)
 
     st.subheader("📅 Select Date Range")
     col1, col2 = st.columns(2)
@@ -119,7 +110,12 @@ with tab1:
             options=[1, 2, 3, 4],
             index=[1, 2, 3, 4].index(default_occupancy) if default_occupancy in [1, 2, 3, 4] else 1,
             help="Select the number of guests per room",
-            format_func=lambda x: {1: "Single (1 guest)", 2: "Double (2 guests)", 3: "Triple (3 guests)", 4: "Family (4 guests)"}.get(x, f"{x} guests"),
+            format_func=lambda x: {
+                1: "Single (1 guest)",
+                2: "Double (2 guests)",
+                3: "Triple (3 guests)",
+                4: "Family (4 guests)",
+            }.get(x, f"{x} guests"),
         )
     with col4:
         dry_run = st.checkbox(
@@ -134,25 +130,26 @@ with tab1:
         if start_date >= end_date:
             st.error("⚠️ End date must be after start date!")
         else:
-            with st.spinner("Running pricing in backend..."):
+            with st.spinner("Running pricing locally..."):
                 try:
-                    run = _post_json(
-                        "/runs",
-                        payload={
-                            "start_date": start_date.isoformat(),
-                            "end_date": end_date.isoformat(),
-                            "dry_run": bool(dry_run),
-                            "occupancy": int(occupancy),
-                        },
+                    run_id = create_run(
+                        start_date=start_date.isoformat(),
+                        end_date=end_date.isoformat(),
+                        dry_run=bool(dry_run),
+                        occupancy=int(occupancy),
                     )
-                    run_id = run["id"]
-                    recs = _get_json(f"/recommendations/{run_id}")
 
-                    df = pd.DataFrame(recs)
+                    recs = run_pricing(
+                        start_date=start_date.isoformat(),
+                        end_date=end_date.isoformat(),
+                        occupancy=int(occupancy),
+                    )
+                    save_recommendations(run_id, recs)
+
+                    df = pd.DataFrame(get_recommendations(run_id))
                     if df.empty:
                         st.warning("No recommendations returned.")
                     else:
-                        # Format for display
                         df["date"] = pd.to_datetime(df["date"]).dt.date
                         df = df.sort_values("date")
 
@@ -188,15 +185,8 @@ with tab1:
                         if dry_run:
                             st.info("🔒 DRY_RUN enabled: pushing is disabled.")
                         else:
-                            if st.button("Push recommended rates", type="secondary", use_container_width=True):
-                                resp = _post_json(
-                                    f"/runs/{run_id}/push",
-                                    payload={"currency": currency},
-                                )
-                                st.success(f"✅ Push complete: {resp}")
+                            st.info("Push is only available via the FastAPI backend deployment.")
 
-                except requests.HTTPError as e:
-                    st.error(f"❌ Backend error: {e.response.text if e.response is not None else str(e)}")
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
 
@@ -217,13 +207,10 @@ with tab2:
                     st.error("⚠️ Hotel name is required!")
                 else:
                     try:
-                        _post_json(
-                            "/competitors",
-                            payload={
-                                "name": new_name,
-                                "website": new_website if new_website else None,
-                                "active": bool(new_active),
-                            },
+                        add_competitor(
+                            name=new_name,
+                            website=new_website if new_website else None,
+                            active=bool(new_active),
                         )
                         st.success(f"✅ Added competitor: {new_name}")
                         st.rerun()
@@ -234,7 +221,7 @@ with tab2:
     st.subheader("📋 Current Competitors")
 
     try:
-        competitors = _get_json("/competitors")
+        competitors = list_competitors()
         if not competitors:
             st.info("ℹ️ No competitors added yet. Add your first competitor above!")
         else:
@@ -252,53 +239,37 @@ with tab2:
 
                     with col_actions:
                         if st.button("🗑️ Delete", key=f"delete_{comp['id']}", use_container_width=True):
-                            _delete(f"/competitors/{comp['id']}")
+                            delete_competitor(int(comp["id"]))
                             st.rerun()
 
                     st.divider()
 
     except Exception as e:
-        st.error(f"❌ Error connecting to API: {str(e)}")
-        st.info("💡 Make sure the backend API is running at " + API_BASE_URL)
+        st.error(f"❌ Error loading competitors: {str(e)}")
 
 # ==================== TAB 3: SETTINGS ====================
 with tab3:
     st.header("Configuration Settings")
     st.markdown("Configure your hotel pricing parameters and system settings.")
 
-    try:
-        cfg = _get_json("/config")
-    except Exception as e:
-        st.error(f"Failed to load config from backend: {str(e)}")
-        cfg = None
+    cfg_obj = AppConfig()
+    st.divider()
 
-    if cfg:
-        hotel = cfg.get("hotel") or {}
-        run_cfg = cfg.get("run") or {}
-        pricing = cfg.get("pricing") or {}
+    col_set1, col_set2 = st.columns(2)
 
-        col_set1, col_set2 = st.columns(2)
+    with col_set1:
+        st.subheader("🏨 Hotel Information")
+        st.text_input("Currency", value=str(cfg_obj.currency), disabled=True)
+        st.text_input("Property ID", value=str(cfg_obj.sb_property_id or ""), disabled=True)
+        st.text_input("Rate Plan ID", value=str(cfg_obj.sb_rate_plan_id or ""), disabled=True)
 
-        with col_set1:
-            st.subheader("🏨 Hotel Information")
-            st.text_input("Currency", value=str(hotel.get("currency", "EUR")), disabled=True)
-            st.text_input("Property ID", value=str(hotel.get("property_id", "")), disabled=True)
-            st.text_input("Rate Plan ID", value=str(hotel.get("rate_plan_id", "")), disabled=True)
+    with col_set2:
+        st.subheader("📊 Default Parameters")
+        st.number_input("Default Horizon (days)", value=int(cfg_obj.horizon_days), disabled=True)
+        st.number_input("Default Occupancy", value=int(cfg_obj.occupancy), disabled=True)
 
-            st.subheader("💰 Pricing Limits")
-            st.number_input("Minimum Rate", value=float(pricing.get("min_rate", 0.0)), disabled=True)
-            st.number_input("Maximum Rate", value=float(pricing.get("max_rate", 0.0)), disabled=True)
-            st.number_input("Max Change per Run (%)", value=float(pricing.get("max_change_pct", 0.1)) * 100.0, disabled=True)
-
-        with col_set2:
-            st.subheader("📊 Default Parameters")
-            st.number_input("Default Horizon (days)", value=int(run_cfg.get("horizon_days", 120)), disabled=True)
-            st.number_input("Default Occupancy", value=int(run_cfg.get("occupancy", 2)), disabled=True)
-            st.number_input("Default Weekend Uplift", value=float(pricing.get("weekend_uplift", 0.0)), disabled=True)
-            st.number_input("Default Market Position", value=float(pricing.get("undercut", 0.0)), disabled=True)
-
-        st.divider()
-        st.info("💡 To modify these settings, edit the `config/settings.yaml` file.")
+    st.divider()
+    st.info("💡 To modify these settings, edit the `config/settings.yaml` file.")
 
 # Footer
 st.divider()
