@@ -2,7 +2,7 @@ import os
 import yaml
 from decimal import Decimal
 from typing import Dict, Optional
-from app.agent.pricing import PricingConfig
+from backend.app.agent.pricing import PricingConfig
 
 
 class AppConfig:
@@ -19,12 +19,10 @@ class AppConfig:
         self.horizon_days = int(y.get("run", {}).get("horizon_days", 120))
         self.occupancy = int(y.get("run", {}).get("occupancy", 2))
         self.currency = y["hotel"].get("currency", os.getenv("CURRENCY", "EUR"))
-        
+
         # Simple Booking configuration
         self.sb_property_id = os.getenv("SB_PROPERTY_ID", y["hotel"].get("property_id"))
-        self.sb_rate_plan_id = os.getenv(
-            "SB_RATE_PLAN_ID", y["hotel"].get("rate_plan_id")
-        )
+        self.sb_rate_plan_id = os.getenv("SB_RATE_PLAN_ID", y["hotel"].get("rate_plan_id"))
 
         self.cfg = PricingConfig(
             min_rate=Decimal(str(p["min_rate"])),
