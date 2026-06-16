@@ -33,26 +33,14 @@ jobs:
         if: always()
         run: python scripts/sync_apify.py report --days 90 --nights 2 --per-night --out report.csv --summary-out report.txt
 
-      - name: Load summary into env
+      # Email is disabled for now. The report is uploaded as a downloadable artifact —
+      # open the workflow run on the Actions tab and download "rate-shopping-report".
+      - name: Upload report artifact
         if: always()
-        run: |
-          {
-            echo "MAIL_BODY<<__EOF__"
-            cat report.txt 2>/dev/null || echo "Report could not be generated."
-            echo "__EOF__"
-          } >> "$GITHUB_ENV"
-
-      - name: Email report
-        if: always()
-        uses: dawidd6/action-send-mail@v3
+        uses: actions/upload-artifact@v4
         with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          secure: true
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "Elbitat weekly rate-shopping report"
-          to: rinop23@gmail.com
-          from: Elbitat Rate Shopping <${{ secrets.SMTP_USERNAME }}>
-          body: ${{ env.MAIL_BODY }}
-          attachments: report.csv
+          name: rate-shopping-report
+          path: |
+            report.csv
+            report.txt
+          retention-days: 30
