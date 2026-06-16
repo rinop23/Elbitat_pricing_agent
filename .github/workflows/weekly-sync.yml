@@ -1,0 +1,50 @@
+name: Weekly sync stragglers + report
+
+# Runs ~1 hour after the scrape (which kicks off all the Apify runs). By now Apify has
+# worked through its queue, so this pulls in any runs that finished after the scrape job
+# ended, then rebuilds and uploads the report. No new scraping cost — sync only.
+on:
+  schedule:
+    - cron: "30 5 * * 1"   # Mondays 05:30 UTC (1h after the scrape)
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      APIFY_ACTOR_ID: ${{ secrets.APIFY_ACTOR_ID }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      PRICING_DEFAULT_CURRENCY: EUR
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Pull any finished runs (several passes)
+        run: |
+          for i in 1 2 3 4 5 6 7 8; do
+            echo "=== sync pass $i ==="
+            python scripts/sync_apify.py sync-pending
+            sleep 120
+          done
+
+      - name: Build report (per night, 2-night stays)
+        if: always()
+        run: python scripts/sync_apify.py report --days 90 --nights 2 --per-night --out report.csv --summary-out report.txt
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rate-shopping-report
+          path: |
+            report.csv
+            report.txt
+          retention-days: 30
