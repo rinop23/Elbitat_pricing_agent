@@ -635,12 +635,14 @@ def run_price_check(
     children: int = 0,
     hotel_ids: Optional[List[int]] = None,
     wait: bool = True,
-    poll_timeout_secs: int = 180,
+    poll_timeout_secs: int = 240,
 ) -> List[Dict[str, Any]]:
-    """Start (and optionally wait+sync) one scrape per check-in date in the range.
+    """Scrape one check-in date per day in the range.
 
-    Used by the dashboard button and by the scheduled job. Applies the date-count
-    and horizon safeguards.
+    Starts every date's Apify run first (they run in parallel on Apify), then polls them
+    together until done or the overall deadline. This is far faster and more reliable than
+    waiting on each date sequentially. Any run still going at the deadline is left for the
+    "Sync latest runs" button. Applies the date-count and horizon safeguards.
     """
     import time
 
@@ -657,30 +659,56 @@ def run_price_check(
     if len(dates) > MAX_DATES_PER_MANUAL_RUN:
         dates = dates[:MAX_DATES_PER_MANUAL_RUN]  # cost guard
 
-    results = []
+    # Phase 1 — start every run (fast).
+    results: List[Dict[str, Any]] = []
+    pending: Dict[int, Dict[str, Any]] = {}
     for ci in dates:
+        entry: Dict[str, Any] = {"check_in": ci.isoformat(), "status": "running"}
         try:
             started = start_scrape_run(ci, nights, adults, children, hotel_ids)
         except Exception as exc:
-            results.append({"check_in": ci.isoformat(), "status": "failed", "error": str(exc)})
+            entry.update({"status": "failed", "error": str(exc)})
+            results.append(entry)
             continue
-
         if started.get("skipped"):
-            results.append({"check_in": ci.isoformat(), "status": "skipped"})
-            continue
+            entry["status"] = "skipped"
+        elif started.get("db_run_id"):
+            entry["db_run_id"] = started["db_run_id"]
+        results.append(entry)
+        if entry.get("db_run_id"):
+            pending[entry["db_run_id"]] = entry
 
-        if wait and started.get("db_run_id"):
-            deadline = time.monotonic() + poll_timeout_secs
-            outcome = {"status": "running"}
-            while time.monotonic() < deadline:
-                outcome = sync_scrape_run(started["db_run_id"])
-                if outcome["status"] != "running":
-                    break
-                time.sleep(6)
-            results.append({"check_in": ci.isoformat(), **outcome})
-        else:
-            results.append({"check_in": ci.isoformat(), **started})
+    # Phase 2 — poll all running runs together until done or deadline.
+    if wait and pending:
+        deadline = time.monotonic() + poll_timeout_secs
+        while pending and time.monotonic() < deadline:
+            for rid in list(pending):
+                try:
+                    out = sync_scrape_run(rid)
+                except Exception as exc:
+                    pending[rid].update({"status": "failed", "error": str(exc)})
+                    del pending[rid]
+                    continue
+                if out["status"] != "running":
+                    pending[rid].update(out)
+                    del pending[rid]
+            if pending:
+                time.sleep(8)
+
     return results
+
+
+def sync_pending_runs() -> List[Dict[str, Any]]:
+    """Poll and sync any runs still marked running/pending (no new scraping cost)."""
+    runs = [r for r in list_recent_runs(limit=200) if r["status"] in ("running", "pending")]
+    out = []
+    for r in runs:
+        try:
+            res = sync_scrape_run(r["id"])
+        except Exception as exc:
+            res = {"status": "error", "error": str(exc)}
+        out.append({"run_id": r["id"], **res})
+    return out
 
 
 # ----------------------------------------------------------------------------

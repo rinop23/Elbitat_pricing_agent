@@ -110,9 +110,8 @@ st.title("🏨 Hotel Pricing Agent")
 
 # Create tabs for different sections
 # Add a new tab for competitor price upload/analysis
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab3, tab4, tab5 = st.tabs([
     "📊 Pricing Dashboard",
-    "🏢 Competitor Management",
     "📥 Competitor Price Upload",
     "📈 Rate Shopping",
     "⚙️ Settings",
@@ -232,121 +231,6 @@ with tab1:
 
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
-
-# ==================== TAB 2: COMPETITOR MANAGEMENT ====================
-with tab2:
-    st.header("Manage Competitor Hotels")
-
-    # Persist competitors in Supabase (same list as the Rate Shopping tab) so they
-    # survive redeploys. Fall back to the legacy local SQLite store only if Supabase
-    # isn't configured (note: that store is wiped on Streamlit Cloud redeploys).
-    try:
-        from backend.app.core import db as _cm_db  # noqa: E402
-        from backend.app.services import rate_shopping_service as _cm_rss  # noqa: E402
-        _cm_supabase = _cm_db.is_configured()
-    except Exception:
-        _cm_supabase = False
-
-    if _cm_supabase:
-        st.markdown("These competitors are stored permanently in Supabase and shared with the **📈 Rate Shopping** tab.")
-        st.caption("Tip: paste each hotel's Booking.com page URL so price scraping can target it precisely.")
-
-        with st.expander("➕ Add New Competitor", expanded=False):
-            with st.form("add_competitor_form", clear_on_submit=True):
-                new_name = st.text_input("Hotel Name*", placeholder="e.g., Hotel Hermitage")
-                new_website = st.text_input("Booking.com URL", placeholder="https://www.booking.com/hotel/it/...")
-                new_self = st.checkbox("This is Elbitat (self)", value=False)
-                new_active = st.checkbox("Active", value=True, help="Track this competitor's prices")
-
-                submitted = st.form_submit_button("Add Competitor", type="primary", use_container_width=True)
-                if submitted:
-                    if not new_name:
-                        st.error("⚠️ Hotel name is required!")
-                    else:
-                        try:
-                            _cm_rss.add_competitor_hotel(
-                                name=new_name,
-                                booking_url=new_website if new_website else None,
-                                active=bool(new_active),
-                                is_self=bool(new_self),
-                            )
-                            st.success(f"✅ Added competitor: {new_name}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error: {str(e)}")
-
-        st.divider()
-        st.subheader("📋 Current Competitors")
-
-        try:
-            competitors = _cm_rss.list_competitor_hotels()
-            if not competitors:
-                st.info("ℹ️ No competitors added yet. Add your first competitor above!")
-            else:
-                for comp in competitors:
-                    with st.container():
-                        col_info, col_actions = st.columns([4, 1])
-                        with col_info:
-                            tag = "⭐ SELF" if comp.get("is_self") else ("🟢" if comp.get("active", True) else "🔴")
-                            st.markdown(f"### {tag} {comp['name']}")
-                            if comp.get("booking_url"):
-                                st.markdown(f"🔗 [Booking.com page]({comp['booking_url']})")
-                            else:
-                                st.markdown("🔗 *No URL specified*")
-                        with col_actions:
-                            if st.button("🗑️ Delete", key=f"delete_{comp['id']}", use_container_width=True):
-                                _cm_rss.delete_competitor_hotel(int(comp["id"]))
-                                st.rerun()
-                        st.divider()
-        except Exception as e:
-            st.error(f"❌ Error loading competitors: {str(e)}")
-
-    else:
-        st.warning(
-            "⚠️ Supabase is not configured, so competitors are stored in a **local file that is "
-            "wiped on every redeploy**. Set `SUPABASE_DB_URL` (see Rate Shopping tab) to make them permanent."
-        )
-        with st.expander("➕ Add New Competitor", expanded=False):
-            with st.form("add_competitor_form", clear_on_submit=True):
-                new_name = st.text_input("Hotel Name*", placeholder="e.g., Grand Hotel Roma")
-                new_website = st.text_input("Website URL", placeholder="e.g., https://www.grandhotelroma.com")
-                new_active = st.checkbox("Active", value=True, help="Track this competitor's prices")
-                submitted = st.form_submit_button("Add Competitor", type="primary", use_container_width=True)
-                if submitted:
-                    if not new_name:
-                        st.error("⚠️ Hotel name is required!")
-                    else:
-                        try:
-                            add_competitor(name=new_name, website=new_website or None, active=bool(new_active))
-                            st.success(f"✅ Added competitor: {new_name}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error: {str(e)}")
-
-        st.divider()
-        st.subheader("📋 Current Competitors")
-        try:
-            competitors = list_competitors()
-            if not competitors:
-                st.info("ℹ️ No competitors added yet. Add your first competitor above!")
-            else:
-                for comp in competitors:
-                    with st.container():
-                        col_info, col_actions = st.columns([4, 1])
-                        with col_info:
-                            status_icon = "🟢" if comp.get("active", True) else "🔴"
-                            st.markdown(f"### {status_icon} {comp['name']}")
-                            if comp.get("website"):
-                                st.markdown(f"🔗 [{comp['website']}]({comp['website']})")
-                            else:
-                                st.markdown("🔗 *No website specified*")
-                        with col_actions:
-                            if st.button("🗑️ Delete", key=f"delete_{comp['id']}", use_container_width=True):
-                                delete_competitor(int(comp["id"]))
-                                st.rerun()
-                        st.divider()
-        except Exception as e:
-            st.error(f"❌ Error loading competitors: {str(e)}")
 
 # ==================== TAB 3: COMPETITOR PRICE UPLOAD ====================
 with tab3:
@@ -819,6 +703,20 @@ with tab4:
                     except Exception as e:
                         st.error(f"Error: {e}")
 
+        st.caption("If some dates are still 'running' when the page returns, use this to pull them in (no extra cost):")
+        if st.button("🔁 Sync latest runs (no new scraping)", use_container_width=True):
+            with st.spinner("Checking Apify for finished runs…"):
+                try:
+                    synced = rss.sync_pending_runs()
+                    if synced:
+                        done = sum(1 for s in synced if s.get("status") == "succeeded")
+                        st.success(f"Synced {len(synced)} run(s); {done} now have data.")
+                        st.dataframe(pd.DataFrame(synced), use_container_width=True, hide_index=True)
+                    else:
+                        st.info("No pending runs — everything is already synced.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
         st.divider()
 
         # ---------------- Insights table ----------------
@@ -827,13 +725,19 @@ with tab4:
             "Shows prices **already collected** (no Apify cost). After a scrape this jumps to the "
             "dates you just fetched; widen the range to review everything you've gathered over time."
         )
-        ic1, ic2, ic3 = st.columns(3)
+        ic1, ic2, ic3, ic4 = st.columns(4)
         with ic1:
             in_start = st.date_input("From", value=date.today(), key="rs_in_start")
         with ic2:
             in_end = st.date_input("To", value=date.today() + timedelta(days=120), key="rs_in_end")
         with ic3:
             in_nights = st.selectbox("Stay length", options=["all", 1, 2, 3, 7], index=0, key="rs_in_nights")
+        with ic4:
+            price_basis = st.radio(
+                "Price basis", options=["Per night", "Total stay"], index=0, key="rs_price_basis",
+                help="Booking.com returns the TOTAL price for the stay. 'Per night' divides it by the number of nights.",
+            )
+        per_night = price_basis == "Per night"
 
         try:
             insights = rss.get_insights(
@@ -848,6 +752,12 @@ with tab4:
             st.info("No observations yet for this filter. Run a price check above.")
         else:
             idf = pd.DataFrame(insights)
+            price_cols = ["elbitat_price", "competitor_min", "competitor_median", "competitor_max"]
+            if per_night and "nights" in idf.columns:
+                for col in price_cols:
+                    if col in idf.columns:
+                        idf[col] = (pd.to_numeric(idf[col], errors="coerce") / idf["nights"]).round(2)
+            st.caption(f"Prices shown **{'per night' if per_night else 'as total for the stay'}**.")
             cols = [
                 "check_in", "nights", "elbitat_price", "competitor_min", "competitor_median",
                 "competitor_max", "competitor_available_count", "elbitat_position",
@@ -882,7 +792,10 @@ with tab4:
 
         # ---------------- Per-hotel price grid ----------------
         st.subheader("🏨 Price per hotel, per day")
-        st.caption("Latest scraped price for each hotel on each check-in date. Blank = sold out / no availability.")
+        st.caption(
+            f"Latest scraped price ({'per night' if per_night else 'total for the stay'}) for each hotel "
+            "on each check-in date. Blank = sold out / no availability."
+        )
         try:
             matrix = rss.get_price_matrix(
                 start_date=in_start, end_date=in_end,
@@ -896,6 +809,8 @@ with tab4:
             st.info("No per-hotel observations yet for this filter.")
         else:
             mdf = pd.DataFrame(matrix)
+            if per_night and "nights" in mdf.columns:
+                mdf["price_amount"] = (pd.to_numeric(mdf["price_amount"], errors="coerce") / mdf["nights"]).round(2)
             # Put Elbitat first among the columns.
             order = (
                 mdf[["hotel_name", "is_self"]].drop_duplicates()
