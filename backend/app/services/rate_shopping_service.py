@@ -146,6 +146,24 @@ def seed_competitor_hotels(rows: List[Dict[str, Any]]) -> int:
 # ----------------------------------------------------------------------------
 # Apify input builder (Booking.com)
 # ----------------------------------------------------------------------------
+def _normalize_url(raw: Optional[str]) -> Optional[str]:
+    """Return a syntactically valid http(s) URL, or None if it cannot be salvaged.
+
+    Adds a missing scheme and trims whitespace. Rejects anything without a proper host
+    (e.g. a hotel name accidentally typed into the URL field) so we can fall back to a
+    name search instead of sending Apify an invalid startUrl.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return None
+    if not s.lower().startswith(("http://", "https://")):
+        s = "https://" + s
+    parsed = urlparse(s)
+    if not parsed.netloc or " " in parsed.netloc or "." not in parsed.netloc:
+        return None
+    return s
+
+
 def _booking_url_with_dates(
     url: str, check_in: date, check_out: date, adults: int, children: int, currency: str
 ) -> str:
@@ -182,11 +200,13 @@ def build_booking_input(
     start_urls = []
     searches = []
     for h in hotels:
-        if h.get("booking_url"):
+        norm_url = _normalize_url(h.get("booking_url"))
+        if norm_url:
             start_urls.append(
-                {"url": _booking_url_with_dates(h["booking_url"], check_in, check_out, adults, children, currency)}
+                {"url": _booking_url_with_dates(norm_url, check_in, check_out, adults, children, currency)}
             )
         else:
+            # No URL, or the URL field held something that isn't a real URL -> search by name.
             loc = h.get("location") or "Isola d'Elba"
             searches.append(f"{h['name']} {loc}")
 
@@ -267,15 +287,28 @@ def normalise_item(
     check_out = search_params["check_out"]
     nights = search_params["nights"]
 
+    # voyager/booking-scraper puts room-level data in a `rooms` array; the lead price /
+    # availability / room type are best read from there, falling back to top-level fields.
+    rooms = item.get("rooms") if isinstance(item.get("rooms"), list) else []
+    room_prices = [p for p in (_to_float_price(r.get("price")) for r in rooms) if p]
+
     price = _to_float_price(_first(item, ["price", "priceText", "minPrice", "totalPrice"]))
+    if price is None and room_prices:
+        price = min(room_prices)
     currency = _first(item, ["currency", "currencyCode"]) or default_currency
 
-    # Availability: explicit flag if present, else infer from presence of a price.
+    # Availability: explicit flag if present, else any bookable room, else infer from price.
     avail_raw = _first(item, ["available", "isAvailable", "hasAvailability"])
     if isinstance(avail_raw, bool):
         available = avail_raw
+    elif rooms:
+        available = any(r.get("available") for r in rooms) or price is not None
     else:
         available = price is not None
+
+    room_type = _first(item, ["roomType", "roomName", "unitType"])
+    if not room_type and rooms:
+        room_type = rooms[0].get("roomType") or rooms[0].get("bedType")
 
     breakfast = _first(item, ["breakfastIncluded", "breakfast", "mealPlan"])
     if isinstance(breakfast, str):
@@ -289,7 +322,7 @@ def normalise_item(
         "nights": nights,
         "guests_adults": search_params["adults"],
         "guests_children": search_params["children"],
-        "room_type": _first(item, ["roomType", "roomName", "unitType"]),
+        "room_type": room_type,
         "price_amount": price,
         "currency": str(currency)[:8],
         "available": available,
