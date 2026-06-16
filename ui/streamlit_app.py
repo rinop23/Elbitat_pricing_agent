@@ -236,59 +236,117 @@ with tab1:
 # ==================== TAB 2: COMPETITOR MANAGEMENT ====================
 with tab2:
     st.header("Manage Competitor Hotels")
-    st.markdown("Add, edit, or remove competitor hotels to track their pricing.")
 
-    with st.expander("➕ Add New Competitor", expanded=False):
-        with st.form("add_competitor_form", clear_on_submit=True):
-            new_name = st.text_input("Hotel Name*", placeholder="e.g., Grand Hotel Roma")
-            new_website = st.text_input("Website URL", placeholder="e.g., https://www.grandhotelroma.com")
-            new_active = st.checkbox("Active", value=True, help="Track this competitor's prices")
-
-            submitted = st.form_submit_button("Add Competitor", type="primary", use_container_width=True)
-            if submitted:
-                if not new_name:
-                    st.error("⚠️ Hotel name is required!")
-                else:
-                    try:
-                        add_competitor(
-                            name=new_name,
-                            website=new_website if new_website else None,
-                            active=bool(new_active),
-                        )
-                        st.success(f"✅ Added competitor: {new_name}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Error: {str(e)}")
-
-    st.divider()
-    st.subheader("📋 Current Competitors")
-
+    # Persist competitors in Supabase (same list as the Rate Shopping tab) so they
+    # survive redeploys. Fall back to the legacy local SQLite store only if Supabase
+    # isn't configured (note: that store is wiped on Streamlit Cloud redeploys).
     try:
-        competitors = list_competitors()
-        if not competitors:
-            st.info("ℹ️ No competitors added yet. Add your first competitor above!")
-        else:
-            for comp in competitors:
-                with st.container():
-                    col_info, col_actions = st.columns([4, 1])
+        from backend.app.core import db as _cm_db  # noqa: E402
+        from backend.app.services import rate_shopping_service as _cm_rss  # noqa: E402
+        _cm_supabase = _cm_db.is_configured()
+    except Exception:
+        _cm_supabase = False
 
-                    with col_info:
-                        status_icon = "🟢" if comp.get("active", True) else "🔴"
-                        st.markdown(f"### {status_icon} {comp['name']}")
-                        if comp.get("website"):
-                            st.markdown(f"🔗 [{comp['website']}]({comp['website']})")
-                        else:
-                            st.markdown("🔗 *No website specified*")
+    if _cm_supabase:
+        st.markdown("These competitors are stored permanently in Supabase and shared with the **📈 Rate Shopping** tab.")
+        st.caption("Tip: paste each hotel's Booking.com page URL so price scraping can target it precisely.")
 
-                    with col_actions:
-                        if st.button("🗑️ Delete", key=f"delete_{comp['id']}", use_container_width=True):
-                            delete_competitor(int(comp["id"]))
+        with st.expander("➕ Add New Competitor", expanded=False):
+            with st.form("add_competitor_form", clear_on_submit=True):
+                new_name = st.text_input("Hotel Name*", placeholder="e.g., Hotel Hermitage")
+                new_website = st.text_input("Booking.com URL", placeholder="https://www.booking.com/hotel/it/...")
+                new_self = st.checkbox("This is Elbitat (self)", value=False)
+                new_active = st.checkbox("Active", value=True, help="Track this competitor's prices")
+
+                submitted = st.form_submit_button("Add Competitor", type="primary", use_container_width=True)
+                if submitted:
+                    if not new_name:
+                        st.error("⚠️ Hotel name is required!")
+                    else:
+                        try:
+                            _cm_rss.add_competitor_hotel(
+                                name=new_name,
+                                booking_url=new_website if new_website else None,
+                                active=bool(new_active),
+                                is_self=bool(new_self),
+                            )
+                            st.success(f"✅ Added competitor: {new_name}")
                             st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
 
-                    st.divider()
+        st.divider()
+        st.subheader("📋 Current Competitors")
 
-    except Exception as e:
-        st.error(f"❌ Error loading competitors: {str(e)}")
+        try:
+            competitors = _cm_rss.list_competitor_hotels()
+            if not competitors:
+                st.info("ℹ️ No competitors added yet. Add your first competitor above!")
+            else:
+                for comp in competitors:
+                    with st.container():
+                        col_info, col_actions = st.columns([4, 1])
+                        with col_info:
+                            tag = "⭐ SELF" if comp.get("is_self") else ("🟢" if comp.get("active", True) else "🔴")
+                            st.markdown(f"### {tag} {comp['name']}")
+                            if comp.get("booking_url"):
+                                st.markdown(f"🔗 [Booking.com page]({comp['booking_url']})")
+                            else:
+                                st.markdown("🔗 *No URL specified*")
+                        with col_actions:
+                            if st.button("🗑️ Delete", key=f"delete_{comp['id']}", use_container_width=True):
+                                _cm_rss.delete_competitor_hotel(int(comp["id"]))
+                                st.rerun()
+                        st.divider()
+        except Exception as e:
+            st.error(f"❌ Error loading competitors: {str(e)}")
+
+    else:
+        st.warning(
+            "⚠️ Supabase is not configured, so competitors are stored in a **local file that is "
+            "wiped on every redeploy**. Set `SUPABASE_DB_URL` (see Rate Shopping tab) to make them permanent."
+        )
+        with st.expander("➕ Add New Competitor", expanded=False):
+            with st.form("add_competitor_form", clear_on_submit=True):
+                new_name = st.text_input("Hotel Name*", placeholder="e.g., Grand Hotel Roma")
+                new_website = st.text_input("Website URL", placeholder="e.g., https://www.grandhotelroma.com")
+                new_active = st.checkbox("Active", value=True, help="Track this competitor's prices")
+                submitted = st.form_submit_button("Add Competitor", type="primary", use_container_width=True)
+                if submitted:
+                    if not new_name:
+                        st.error("⚠️ Hotel name is required!")
+                    else:
+                        try:
+                            add_competitor(name=new_name, website=new_website or None, active=bool(new_active))
+                            st.success(f"✅ Added competitor: {new_name}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
+
+        st.divider()
+        st.subheader("📋 Current Competitors")
+        try:
+            competitors = list_competitors()
+            if not competitors:
+                st.info("ℹ️ No competitors added yet. Add your first competitor above!")
+            else:
+                for comp in competitors:
+                    with st.container():
+                        col_info, col_actions = st.columns([4, 1])
+                        with col_info:
+                            status_icon = "🟢" if comp.get("active", True) else "🔴"
+                            st.markdown(f"### {status_icon} {comp['name']}")
+                            if comp.get("website"):
+                                st.markdown(f"🔗 [{comp['website']}]({comp['website']})")
+                            else:
+                                st.markdown("🔗 *No website specified*")
+                        with col_actions:
+                            if st.button("🗑️ Delete", key=f"delete_{comp['id']}", use_container_width=True):
+                                delete_competitor(int(comp["id"]))
+                                st.rerun()
+                        st.divider()
+        except Exception as e:
+            st.error(f"❌ Error loading competitors: {str(e)}")
 
 # ==================== TAB 3: COMPETITOR PRICE UPLOAD ====================
 with tab3:
