@@ -1,0 +1,35 @@
+# Elbitat rate-shopping competitor seed file.
+#
+# Copy to config/competitors.yaml and edit, then load with:
+#   python scripts/sync_apify.py seed --file config/competitors.yaml
+#
+# Seeding is idempotent: hotels whose `name` already exists are skipped.
+# You can also manage these from the "📈 Rate Shopping" tab in the app.
+#
+# Tips:
+# - booking_url: paste the Booking.com hotel page URL (most precise scraping).
+#   Leave it blank to fall back to a name+location search.
+# - Mark Elbitat's own listing with is_self: true so it shows up as "Elbitat" in the
+#   dashboard and is excluded from the competitor min/median/max.
+
+hotels:
+  - name: "Elbitat"
+    is_self: true
+    location: "Isola d'Elba"
+    booking_url: ""          # <-- put Elbitat's Booking.com URL here
+    notes: "Our property"
+
+  - name: "Hotel Hermitage"
+    location: "Biodola, Isola d'Elba"
+    booking_url: ""
+    active: true
+
+  - name: "Hotel Capo Sud"
+    location: "Lacona, Isola d'Elba"
+    booking_url: ""
+    active: true
+
+  - name: "Hotel Montecristo"
+    location: "Marina di Campo, Isola d'Elba"
+    booking_url: ""
+    active: true

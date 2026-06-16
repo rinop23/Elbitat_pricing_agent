@@ -110,10 +110,11 @@ st.title("🏨 Hotel Pricing Agent")
 
 # Create tabs for different sections
 # Add a new tab for competitor price upload/analysis
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Pricing Dashboard",
     "🏢 Competitor Management",
     "📥 Competitor Price Upload",
+    "📈 Rate Shopping",
     "⚙️ Settings",
 ])
 
@@ -300,15 +301,231 @@ with tab3:
         "Supported formats: CSV, XLSX, ODS."
     )
 
+    # Keep track of which file was last loaded so we can avoid stale session state
+    if "uploaded_competitor_file_name" not in st.session_state:
+        st.session_state["uploaded_competitor_file_name"] = None
+
+    def _normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df.columns = [str(c).strip() for c in df.columns]
+        return df
+
+    def _maybe_promote_first_row_as_header(df: pd.DataFrame) -> pd.DataFrame:
+        """If the sheet looks like it has a header row inside the data (common in ODS exports), promote it."""
+        if df.empty:
+            return df
+
+        first_row = df.iloc[0]
+        if any(str(c).lower().startswith("unnamed") for c in df.columns) and any(
+            isinstance(v, str) and v.strip() for v in first_row.values
+        ):
+            new_cols = [str(v).strip() if str(v).strip() else str(old) for old, v in zip(df.columns, first_row.values)]
+            df2 = df.iloc[1:].copy()
+            df2.columns = new_cols
+            return df2
+
+        return df
+
+    def _find_date_col(df: pd.DataFrame) -> str | None:
+        for c in df.columns:
+            if str(c).strip().lower() == "date":
+                return c
+
+        for c in df.columns:
+            if str(c).lower().startswith("unnamed"):
+                try:
+                    v = df[c].iloc[0]
+                except Exception:
+                    continue
+                if isinstance(v, str) and v.strip().lower() == "date":
+                    return c
+
+        return None
+
+    def _coerce_date_column(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
+        df = df.copy()
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce").dt.date
+        return df.dropna(subset=[date_col])
+
+    def _looks_like_two_level_header_competitor_layout(df: pd.DataFrame) -> bool:
+        """Heuristic for the provided ODS: columns like capobianco/capobianco.1 and first row like singola/doppia."""
+        if df.empty or df.shape[1] < 3:
+            return False
+
+        # Ignore first column (often date/unnamed)
+        rest = list(df.columns[1:])
+        has_dot_dupes = any(str(c).endswith(".1") or str(c).endswith(".2") for c in rest)
+
+        try:
+            row0 = df.iloc[0, 1:]
+        except Exception:
+            return False
+
+        row0_vals = [str(v).strip().lower() if v is not None else "" for v in row0.values]
+        room_tokens = {"singola", "doppia", "tripla", "quadrupla", "single", "double", "triple", "family"}
+        has_room_tokens = any(v in room_tokens for v in row0_vals)
+
+        return bool(has_dot_dupes and has_room_tokens)
+
+    def _apply_two_level_header_competitor_layout(df_raw: pd.DataFrame) -> pd.DataFrame:
+        """Convert layout: columns are competitor names (with .1 duplicates), first data row is room type.
+
+        Output columns: date + {room}__{competitor}
+        """
+        if df_raw.empty:
+            return df_raw
+
+        df = df_raw.copy()
+
+        # Determine date column candidate (usually first column)
+        date_col = df.columns[0]
+
+        # Room labels are in first row (excluding date col)
+        room_labels = [str(v).strip().lower() for v in df.iloc[0, 1:].values]
+
+        # Competitor column names as read (excluding date col)
+        comp_cols = list(df.columns[1:])
+
+        def _base_competitor_name(col: str) -> str:
+            s = str(col).strip()
+            # Pandas duplicate columns become name, name.1, name.2...
+            if "." in s and s.rsplit(".", 1)[-1].isdigit():
+                return s.rsplit(".", 1)[0]
+            return s
+
+        new_names = {}
+        for i, c in enumerate(comp_cols):
+            comp = _base_competitor_name(c)
+            room = room_labels[i] if i < len(room_labels) else "default"
+            if not room:
+                room = "default"
+            new_names[c] = f"{room}__{comp}"
+
+        # Drop the header-in-data row and rename columns
+        df2 = df.iloc[1:].copy()
+        df2 = df2.rename(columns=new_names)
+        # Keep date column name stable
+        df2 = df2.rename(columns={date_col: "date"})
+        return df2
+
+    def _ensure_literal_date_column(df: pd.DataFrame) -> pd.DataFrame:
+        """Ensure the dataframe contains a literal 'date' column (lowercase).
+
+        Streamlit users frequently upload sheets where the date header is 'Date', 'DATE', or has spaces.
+        The rest of the UI expects a stable column name.
+        """
+        df2 = df.copy()
+        cols = list(df2.columns)
+        # If already has date (any casing)
+        for c in cols:
+            if str(c).strip().lower() == "date":
+                if c != "date":
+                    df2 = df2.rename(columns={c: "date"})
+                return df2
+        return df2
+
+    def _ensure_date_column_from_any(df: pd.DataFrame) -> pd.DataFrame:
+        """Ensure there is a usable 'date' column.
+
+        Prefers:
+        1) an existing date-like column (case-insensitive match)
+        2) the user's last selection stored in session
+        3) a detected date column via _find_date_col
+        4) the first column
+        """
+        df2 = df.copy()
+
+        # 1) already has a date column in any casing
+        df2 = _ensure_literal_date_column(df2)
+        if "date" in [str(c).strip().lower() for c in df2.columns]:
+            return df2
+
+        # 2) user's last selection
+        preferred = st.session_state.get("competitor_date_col_value")
+        if preferred and preferred in df2.columns:
+            df2 = _coerce_date_column(df2, preferred)
+            if preferred != "date":
+                df2 = df2.rename(columns={preferred: "date"})
+            df2 = _ensure_literal_date_column(df2)
+            return df2
+
+        # 3) detected
+        detected = _find_date_col(df2)
+        if detected and detected in df2.columns:
+            df2 = _coerce_date_column(df2, detected)
+            if detected != "date":
+                df2 = df2.rename(columns={detected: "date"})
+            df2 = _ensure_literal_date_column(df2)
+            return df2
+
+        # 4) fallback to first column
+        if len(df2.columns) > 0:
+            first = df2.columns[0]
+            df2 = _coerce_date_column(df2, first)
+            if first != "date":
+                df2 = df2.rename(columns={first: "date"})
+            df2 = _ensure_literal_date_column(df2)
+
+        return df2
+
+    def _load_table(df_raw: pd.DataFrame, *, source_name: str | None = None):
+        df_raw = _normalize_cols(df_raw)
+
+        # Special-case: provided ODS uses competitor columns + room labels in first data row
+        if _looks_like_two_level_header_competitor_layout(df_raw):
+            df_raw = _apply_two_level_header_competitor_layout(df_raw)
+
+        # Try to fix common ODS layout where row 1 contains labels (Date / singola / doppia)
+        df_raw = _maybe_promote_first_row_as_header(df_raw)
+        df_raw = _normalize_cols(df_raw)
+
+        detected = _find_date_col(df_raw)
+
+        # Persist the user's choice per-source to survive reruns
+        default_choice = st.session_state.get("competitor_date_col_value")
+        options = list(df_raw.columns)
+        if default_choice in options:
+            default_index = options.index(default_choice)
+        elif detected in options:
+            default_index = options.index(detected)
+        else:
+            default_index = 0
+
+        chosen = st.selectbox(
+            "Select date column",
+            options=options,
+            index=default_index,
+            help="Pick the column that contains dates.",
+            key="competitor_date_col",
+        )
+        st.session_state["competitor_date_col_value"] = chosen
+
+        df_final = _coerce_date_column(df_raw, chosen)
+        if df_final.empty:
+            st.error("No valid date rows found. Check date formatting.")
+            return
+
+        # Normalize date column name to literal 'date' so the rest of the pipeline is stable.
+        original_date_col = chosen
+        if original_date_col != "date":
+            df_final = df_final.rename(columns={original_date_col: "date"})
+
+        df_final = _ensure_literal_date_column(df_final)
+
+        st.session_state["uploaded_competitor_prices"] = df_final
+        st.session_state["uploaded_competitor_original_date_col"] = original_date_col
+        st.session_state["uploaded_competitor_file_name"] = source_name
+
+        st.success(f"Loaded {len(df_final)} rows")
+        st.dataframe(df_final.head(50), use_container_width=True)
+
     # Convenience: load the bundled file if present
     default_ods_path = REPO_ROOT / "competitor" / "Competitors.ods"
     if default_ods_path.exists():
         if st.button("Load bundled competitor/Competitors.ods", use_container_width=True):
             try:
                 df_raw = pd.read_excel(default_ods_path, engine="odf")
-                df_raw.columns = [str(c).strip() for c in df_raw.columns]
-                st.session_state["uploaded_competitor_prices"] = df_raw
-                st.success(f"Loaded bundled file: {default_ods_path.name}")
+                _load_table(df_raw)
             except Exception as e:
                 st.error(
                     "Failed to read ODS. Ensure dependency 'odfpy' is installed (required for .ods). "
@@ -318,8 +535,13 @@ with tab3:
     uploaded = st.file_uploader(
         "Upload file",
         type=["csv", "xlsx", "ods"],
-        help="Date format: YYYY-MM-DD.",
+        help="Date format: YYYY-MM-DD (or Excel date).",
     )
+
+    # If a new file is uploaded, clear previous parsed table to avoid stale state
+    if uploaded is not None and st.session_state.get("uploaded_competitor_file_name") != uploaded.name:
+        st.session_state.pop("uploaded_competitor_prices", None)
+        st.session_state.pop("uploaded_competitor_original_date_col", None)
 
     if uploaded is not None:
         try:
@@ -331,22 +553,8 @@ with tab3:
             else:
                 df_raw = pd.read_excel(uploaded)
 
-            # Normalize columns
-            df_raw.columns = [str(c).strip() for c in df_raw.columns]
-            if "date" not in [c.lower() for c in df_raw.columns]:
-                st.error("Missing required column: date")
-                st.stop()
-
-            # Find the actual date column name (case-insensitive)
-            date_col = next(c for c in df_raw.columns if c.lower() == "date")
-            df_raw[date_col] = pd.to_datetime(df_raw[date_col], errors="coerce").dt.date
-            df_raw = df_raw.dropna(subset=[date_col])
-
-            # Keep a copy in session
-            st.session_state["uploaded_competitor_prices"] = df_raw
-
-            st.success(f"Loaded {len(df_raw)} rows")
-            st.dataframe(df_raw.head(50), use_container_width=True)
+            # Always attempt to load/normalize on reruns too
+            _load_table(df_raw, source_name=uploaded.name)
 
         except Exception as e:
             st.error(
@@ -358,7 +566,22 @@ with tab3:
     if df_uploaded is None:
         st.info("Upload a file to compute daily lowest/avg/highest competitor prices.")
     else:
-        date_col = next(c for c in df_uploaded.columns if c.lower() == "date")
+        # Be defensive: ensure a usable 'date' column even if the stored df came from an older run
+        df_uploaded = _ensure_date_column_from_any(df_uploaded)
+        st.session_state["uploaded_competitor_prices"] = df_uploaded
+
+        if "date" not in [str(c).strip().lower() for c in df_uploaded.columns]:
+            st.error(
+                "Missing required column: date. "
+                "Please re-upload and select the correct date column in the dropdown."
+            )
+            with st.expander("Debug: show detected columns"):
+                st.write(list(df_uploaded.columns))
+                st.write(df_uploaded.head(10))
+            st.stop()
+
+        # Use the normalized literal 'date' column
+        date_col = next(c for c in df_uploaded.columns if str(c).strip().lower() == "date")
         value_cols = [c for c in df_uploaded.columns if c != date_col]
 
         # Detect room categories by `room__competitor` pattern
@@ -410,8 +633,199 @@ with tab3:
             use_container_width=True,
         )
 
-# ==================== TAB 4: SETTINGS ====================
+# ==================== TAB 4: RATE SHOPPING ====================
 with tab4:
+    st.header("Rate Shopping — Elbitat vs Competitors")
+    st.caption("Live competitor pricing scraped via Apify (server-side) and stored in Supabase.")
+
+    # Lazy imports so the other tabs still work if Supabase/psycopg2 isn't configured locally.
+    try:
+        from backend.app.core import db as _rs_db  # noqa: E402
+        from backend.app.services import rate_shopping_service as rss  # noqa: E402
+        _rs_import_ok = True
+        _rs_import_err = None
+    except Exception as _e:  # pragma: no cover
+        _rs_import_ok = False
+        _rs_import_err = str(_e)
+
+    if not _rs_import_ok:
+        st.error(
+            "Rate-shopping dependencies are not available. Install requirements "
+            f"(`pip install -r requirements.txt`).\n\nDetails: {_rs_import_err}"
+        )
+    elif not _rs_db.is_configured():
+        st.warning(
+            "⚙️ Rate shopping is not configured yet. Set the following secrets/env vars:\n\n"
+            "- `SUPABASE_DB_URL` — Supabase Transaction pooler connection string\n"
+            "- `APIFY_TOKEN` — your Apify API token (kept server-side)\n"
+            "- `APIFY_ACTOR_ID` — defaults to `voyager/booking-scraper`\n\n"
+            "See `.env.example` and `RATE_SHOPPING_GUIDE.md`."
+        )
+    else:
+        # ---------------- Competitor hotels ----------------
+        st.subheader("🏨 Competitor hotels")
+        st.caption("Add Elbitat (mark it as *self*) plus 5–15 competitors. Booking.com URL gives the most precise scrape.")
+
+        with st.expander("➕ Add hotel"):
+            with st.form("rs_add_hotel", clear_on_submit=True):
+                h_name = st.text_input("Name*", placeholder="e.g., Hotel Hermitage")
+                h_url = st.text_input("Booking.com URL", placeholder="https://www.booking.com/hotel/it/...")
+                h_loc = st.text_input("Location", value="Isola d'Elba")
+                h_self = st.checkbox("This is Elbitat (self)", value=False)
+                h_active = st.checkbox("Active", value=True)
+                h_notes = st.text_input("Notes", placeholder="optional")
+                if st.form_submit_button("Add hotel", type="primary"):
+                    if not h_name:
+                        st.error("Name is required.")
+                    else:
+                        try:
+                            rss.add_competitor_hotel(
+                                name=h_name, booking_url=h_url or None, location=h_loc or None,
+                                active=bool(h_active), is_self=bool(h_self), notes=h_notes or None,
+                            )
+                            st.success(f"Added {h_name}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+        try:
+            hotels = rss.list_competitor_hotels()
+        except Exception as e:
+            hotels = []
+            st.error(f"Could not load hotels: {e}")
+
+        if not hotels:
+            st.info("No hotels yet. Add Elbitat (as *self*) and a few competitors above.")
+        else:
+            for h in hotels:
+                c1, c2, c3 = st.columns([5, 2, 1])
+                with c1:
+                    tag = "⭐ SELF" if h["is_self"] else ("🟢" if h["active"] else "🔴")
+                    st.markdown(f"**{tag} {h['name']}**" + (f" — [link]({h['booking_url']})" if h.get("booking_url") else ""))
+                    if h.get("location"):
+                        st.caption(h["location"])
+                with c2:
+                    if st.button("Toggle active", key=f"rs_toggle_{h['id']}"):
+                        rss.update_competitor_hotel(h["id"], {"active": not h["active"]})
+                        st.rerun()
+                with c3:
+                    if st.button("🗑️", key=f"rs_del_{h['id']}"):
+                        rss.delete_competitor_hotel(h["id"])
+                        st.rerun()
+
+        st.divider()
+
+        # ---------------- Run a price check ----------------
+        st.subheader("▶️ Run a price check")
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            rs_start = st.date_input("From check-in", value=date.today() + timedelta(days=14), key="rs_start")
+        with rc2:
+            rs_end = st.date_input("To check-in", value=date.today() + timedelta(days=20), key="rs_end")
+        with rc3:
+            rs_nights = st.selectbox("Nights", options=[1, 2, 3, 7], index=0, key="rs_nights")
+        rc4, rc5 = st.columns(2)
+        with rc4:
+            rs_adults = st.selectbox("Adults", options=[1, 2, 3, 4], index=1, key="rs_adults")
+        with rc5:
+            rs_children = st.number_input("Children", min_value=0, max_value=6, value=0, key="rs_children")
+
+        st.caption(
+            f"Cost guards: ≤{rss.MAX_DATES_PER_MANUAL_RUN} dates per run, ≤{rss.MAX_COMPETITORS} competitors, "
+            f"≤{rss.MAX_HORIZON_DAYS}-day horizon, duplicate searches within "
+            f"{rss.DEDUP_WINDOW_HOURS}h are skipped. One Apify run per check-in date."
+        )
+
+        if st.button("🔄 Run price check", type="primary", use_container_width=True):
+            if rs_start > rs_end:
+                st.error("'From' must be on or before 'To'.")
+            else:
+                with st.spinner("Starting Apify runs and waiting for results… (this can take a couple of minutes)"):
+                    try:
+                        results = rss.run_price_check(
+                            start_date=rs_start, end_date=rs_end, nights=int(rs_nights),
+                            adults=int(rs_adults), children=int(rs_children), wait=True,
+                        )
+                        ok = sum(1 for r in results if r.get("status") == "succeeded")
+                        st.success(f"Done. {ok}/{len(results)} dates returned data.")
+                        st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        st.divider()
+
+        # ---------------- Insights table ----------------
+        st.subheader("📊 Elbitat vs competitors")
+        ic1, ic2, ic3 = st.columns(3)
+        with ic1:
+            in_start = st.date_input("From", value=date.today(), key="rs_in_start")
+        with ic2:
+            in_end = st.date_input("To", value=date.today() + timedelta(days=90), key="rs_in_end")
+        with ic3:
+            in_nights = st.selectbox("Stay length", options=["all", 1, 2, 3, 7], index=0, key="rs_in_nights")
+
+        try:
+            insights = rss.get_insights(
+                start_date=in_start, end_date=in_end,
+                nights=None if in_nights == "all" else int(in_nights),
+            )
+        except Exception as e:
+            insights = []
+            st.error(f"Could not load insights: {e}")
+
+        if not insights:
+            st.info("No observations yet for this filter. Run a price check above.")
+        else:
+            idf = pd.DataFrame(insights)
+            cols = [
+                "check_in", "nights", "elbitat_price", "competitor_min", "competitor_median",
+                "competitor_max", "competitor_available_count", "elbitat_position",
+                "median_trend_pct", "recommendation",
+            ]
+            idf = idf[[c for c in cols if c in idf.columns]]
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("Dates analysed", len(idf))
+            with m2:
+                above = (idf["elbitat_position"] == "above").sum() if "elbitat_position" in idf else 0
+                st.metric("Dates priced above market", int(above))
+            with m3:
+                flags = idf["recommendation"].str.startswith(("🔴", "🟠", "⚠️")).sum() if "recommendation" in idf else 0
+                st.metric("Dates needing attention", int(flags))
+            st.dataframe(
+                idf, use_container_width=True, hide_index=True,
+                column_config={
+                    "check_in": "Date",
+                    "elbitat_price": "Elbitat",
+                    "competitor_min": "Comp min",
+                    "competitor_median": "Comp median",
+                    "competitor_max": "Comp max",
+                    "competitor_available_count": "Comps avail",
+                    "elbitat_position": "Position",
+                    "median_trend_pct": "Median Δ%",
+                    "recommendation": "Suggested action",
+                },
+            )
+
+        st.divider()
+
+        # ---------------- Recent runs ----------------
+        with st.expander("🛰️ Recent scrape runs"):
+            try:
+                runs = rss.list_recent_runs(limit=15)
+                if runs:
+                    rdf = pd.DataFrame(runs)[
+                        [c for c in ["id", "status", "item_count", "cost_usd", "started_at", "finished_at", "error_message"]
+                         if c in pd.DataFrame(runs).columns]
+                    ]
+                    st.dataframe(rdf, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("No runs yet.")
+            except Exception as e:
+                st.error(f"Could not load runs: {e}")
+
+# ==================== TAB 5: SETTINGS ====================
+with tab5:
     st.header("Configuration Settings")
     st.markdown("Configure your hotel pricing parameters and system settings.")
 
