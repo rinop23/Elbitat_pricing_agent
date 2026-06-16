@@ -1,0 +1,58 @@
+name: Weekly competitor price scrape
+
+# Cost control: runs ONCE per week (Monday 04:30 UTC). Each run starts one Apify
+# actor run per (check-in date x stay length), so keep this weekly unless needed.
+on:
+  schedule:
+    - cron: "30 4 * * 1"   # Mondays 04:30 UTC
+  workflow_dispatch:        # allow manual runs from the Actions tab
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      APIFY_ACTOR_ID: ${{ secrets.APIFY_ACTOR_ID }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      PRICING_DEFAULT_CURRENCY: EUR
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Scrape next 90 days (1 & 2 night stays, 2 adults)
+        run: python scripts/sync_apify.py scrape --days 90 --nights 1,2 --adults 2
+
+      - name: Build report (per night, 2-night stays)
+        if: always()
+        run: python scripts/sync_apify.py report --days 90 --nights 2 --per-night --out report.csv --summary-out report.txt
+
+      - name: Load summary into env
+        if: always()
+        run: |
+          {
+            echo "MAIL_BODY<<__EOF__"
+            cat report.txt 2>/dev/null || echo "Report could not be generated."
+            echo "__EOF__"
+          } >> "$GITHUB_ENV"
+
+      - name: Email report
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "Elbitat weekly rate-shopping report"
+          to: rinop23@gmail.com
+          from: Elbitat Rate Shopping <${{ secrets.SMTP_USERNAME }}>
+          body: ${{ env.MAIL_BODY }}
+          attachments: report.csv

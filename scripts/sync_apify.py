@@ -117,6 +117,65 @@ def cmd_sync_pending(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    """Write a CSV + plain-text summary of current insights (for emailing)."""
+    import csv as _csv
+
+    start = date.today()
+    end = start + timedelta(days=int(args.days))
+    nights = None if str(args.nights).lower() == "all" else int(args.nights)
+    rows = rss.get_insights(start_date=start, end_date=end, nights=nights)
+
+    price_fields = ["elbitat_price", "competitor_min", "competitor_median", "competitor_max"]
+    for r in rows:
+        n = r.get("nights") or 1
+        if args.per_night:
+            for pf in price_fields:
+                if r.get(pf) is not None:
+                    try:
+                        r[pf] = round(float(r[pf]) / n, 2)
+                    except (TypeError, ValueError):
+                        pass
+
+    cols = [
+        "check_in", "nights", "elbitat_price", "competitor_min", "competitor_median",
+        "competitor_max", "competitor_available_count", "elbitat_position",
+        "median_trend_pct", "recommendation",
+    ]
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        w = _csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+    above = sum(1 for r in rows if r.get("elbitat_position") == "above")
+    flagged = [r for r in rows if str(r.get("recommendation", "")).startswith(("🔴", "🟠", "⚠️"))]
+    basis = "per night" if args.per_night else "total stay"
+    lines = [
+        f"Elbitat rate-shopping report ({basis})",
+        f"Window: {start} to {end}  (nights={args.nights})",
+        f"Dates analysed: {len(rows)}",
+        f"Dates priced ABOVE competitor median: {above}",
+        f"Dates needing attention: {len(flagged)}",
+        "",
+    ]
+    if flagged:
+        lines.append("Flags:")
+        for r in flagged[:30]:
+            lines.append(
+                f"  {r['check_in']} (x{r.get('nights')}): "
+                f"Elbitat {r.get('elbitat_price')} vs median {r.get('competitor_median')} "
+                f"-> {r.get('recommendation')}"
+            )
+    else:
+        lines.append("No dates flagged for attention.")
+    summary = "\n".join(lines)
+    with open(args.summary_out, "w", encoding="utf-8") as f:
+        f.write(summary + "\n")
+    print(summary)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Elbitat rate-shopping CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -136,6 +195,14 @@ def main() -> int:
 
     p_sync = sub.add_parser("sync-pending", help="Poll and sync any still-running runs")
     p_sync.set_defaults(func=cmd_sync_pending)
+
+    p_report = sub.add_parser("report", help="Write a CSV + text summary of current insights")
+    p_report.add_argument("--days", default=90)
+    p_report.add_argument("--nights", default="2")
+    p_report.add_argument("--per-night", dest="per_night", action="store_true")
+    p_report.add_argument("--out", default="report.csv")
+    p_report.add_argument("--summary-out", dest="summary_out", default="report.txt")
+    p_report.set_defaults(func=cmd_report)
 
     args = parser.parse_args()
     return args.func(args)
