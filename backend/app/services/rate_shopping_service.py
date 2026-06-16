@@ -747,8 +747,17 @@ def _median_trend(check_in: date, nights: int, adults: int) -> Optional[float]:
         conn.close()
 
 
-def recommend(row: Dict[str, Any], median_trend: Optional[float] = None) -> str:
-    """Suggested action for one insights row, following the documented rules."""
+def recommend(
+    row: Dict[str, Any],
+    median_trend: Optional[float] = None,
+    self_has_other_stay: bool = False,
+) -> str:
+    """Suggested action for one insights row, following the documented rules.
+
+    self_has_other_stay: True when Elbitat has no price for THIS stay length but does have
+    one for the same date at a different stay length (i.e. a minimum-stay rule, not a real
+    visibility problem).
+    """
     elbitat = row.get("elbitat_price")
     elbitat = float(elbitat) if elbitat is not None else None
     elbitat_avail = row.get("elbitat_available")
@@ -760,8 +769,10 @@ def recommend(row: Dict[str, Any], median_trend: Optional[float] = None) -> str:
     high_availability = total > 0 and avail_count >= math.ceil(HIGH_AVAIL_RATIO * total)
     mostly_sold_out = total > 0 and avail_count <= math.floor(SOLD_OUT_RATIO * total)
 
-    # Rule 5: no Elbitat price but competitors have prices -> visibility/OTA issue.
+    # Rule 5: no Elbitat price but competitors have prices.
     if elbitat is None and median is not None:
+        if self_has_other_stay:
+            return "ℹ️ No rate for this stay length — likely a minimum-stay rule (Elbitat sells other lengths on this date)"
         return "🔴 Visibility / OTA listing issue — Elbitat has no price for these dates while competitors do"
 
     if elbitat is None or median is None:
@@ -813,13 +824,30 @@ def get_insights(
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(f"SELECT * FROM rateshop.pricing_insights{where} ORDER BY check_in", params)
         rows = [dict(r) for r in cur.fetchall()]
+
+        # Dates where Elbitat has a price for SOME stay length — used to tell a minimum-stay
+        # rule apart from a genuine "no listing" visibility issue.
+        sd_clauses = ["is_self", "price_amount IS NOT NULL"]
+        sd_params: List[Any] = []
+        if start_date:
+            sd_clauses.append("check_in >= %s")
+            sd_params.append(start_date)
+        if end_date:
+            sd_clauses.append("check_in <= %s")
+            sd_params.append(end_date)
+        cur.execute(
+            f"SELECT DISTINCT check_in FROM rateshop.hotel_price_observations WHERE {' AND '.join(sd_clauses)}",
+            sd_params,
+        )
+        self_priced_dates = {r["check_in"] for r in cur.fetchall()}
     finally:
         conn.close()
 
     for r in rows:
         trend = _median_trend(r["check_in"], r["nights"], r["guests_adults"])
         r["median_trend_pct"] = round(trend * 100, 1) if trend is not None else None
-        r["recommendation"] = recommend(r, trend)
+        self_other = r.get("elbitat_price") is None and r["check_in"] in self_priced_dates
+        r["recommendation"] = recommend(r, trend, self_has_other_stay=self_other)
     return rows
 
 
