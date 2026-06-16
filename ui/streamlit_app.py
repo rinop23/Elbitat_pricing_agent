@@ -686,31 +686,49 @@ with tab4:
             if rs_start > rs_end:
                 st.error("'From' must be on or before 'To'.")
             else:
-                with st.spinner("Starting Apify runs and waiting for results… (this can take a couple of minutes)"):
+                with st.spinner("Starting Apify runs and waiting briefly for results…"):
                     try:
+                        # Brief wait catches fast runs inline; Apify queues the rest, which the
+                        # user pulls with the Sync button (avoids the page hanging for minutes).
                         results = rss.run_price_check(
                             start_date=rs_start, end_date=rs_end, nights=int(rs_nights),
-                            adults=int(rs_adults), children=int(rs_children), wait=True,
+                            adults=int(rs_adults), children=int(rs_children),
+                            wait=True, poll_timeout_secs=90,
                         )
                         ok = sum(1 for r in results if r.get("status") == "succeeded")
-                        st.success(f"Done. {ok}/{len(results)} dates returned data. Results below now show these dates.")
-                        st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
-                        # Auto-point the results view at the dates we just scraped, so the user
-                        # doesn't have to re-select them. (Set before those widgets are created.)
+                        running = sum(1 for r in results if r.get("status") == "running")
+                        skipped = sum(1 for r in results if r.get("status") == "skipped")
+                        failed = sum(1 for r in results if r.get("status") == "failed")
+                        st.success(f"✅ Loaded {ok}/{len(results)} dates. Results below show these dates.")
+                        if running:
+                            st.info(
+                                f"⏳ {running} date(s) still running on Apify (it queues runs). "
+                                "Click **🔁 Sync latest runs** below in a minute to load them — click again if needed."
+                            )
+                        if skipped:
+                            st.caption(f"{skipped} date(s) skipped — already scraped in the last {rss.DEDUP_WINDOW_HOURS}h.")
+                        if failed:
+                            st.warning(f"{failed} date(s) failed to start.")
+                            st.dataframe(pd.DataFrame([r for r in results if r.get("status") == "failed"]),
+                                         use_container_width=True, hide_index=True)
+                        # Point the results view at the dates we just scraped.
                         st.session_state["rs_in_start"] = rs_start
                         st.session_state["rs_in_end"] = rs_end
                         st.session_state["rs_in_nights"] = int(rs_nights)
                     except Exception as e:
                         st.error(f"Error: {e}")
 
-        st.caption("If some dates are still 'running' when the page returns, use this to pull them in (no extra cost):")
-        if st.button("🔁 Sync latest runs (no new scraping)", use_container_width=True):
+        st.caption("After starting a check, wait ~1–2 min then click this to load the results (no new scraping cost):")
+        if st.button("🔁 Sync latest runs (no new scraping)", type="primary", use_container_width=True):
             with st.spinner("Checking Apify for finished runs…"):
                 try:
                     synced = rss.sync_pending_runs()
                     if synced:
                         done = sum(1 for s in synced if s.get("status") == "succeeded")
-                        st.success(f"Synced {len(synced)} run(s); {done} now have data.")
+                        still = sum(1 for s in synced if s.get("status") == "running")
+                        st.success(f"Checked {len(synced)} run(s): {done} loaded with data, {still} still running.")
+                        if still:
+                            st.caption("Some are still running on Apify — click Sync again in a minute.")
                         st.dataframe(pd.DataFrame(synced), use_container_width=True, hide_index=True)
                     else:
                         st.info("No pending runs — everything is already synced.")
@@ -725,13 +743,19 @@ with tab4:
             "Shows prices **already collected** (no Apify cost). After a scrape this jumps to the "
             "dates you just fetched; widen the range to review everything you've gathered over time."
         )
+        # Initialise once so the run button can auto-jump these without the
+        # "value set via Session State API" warning (no value=/index= below).
+        st.session_state.setdefault("rs_in_start", date.today())
+        st.session_state.setdefault("rs_in_end", date.today() + timedelta(days=120))
+        st.session_state.setdefault("rs_in_nights", "all")
+
         ic1, ic2, ic3, ic4 = st.columns(4)
         with ic1:
-            in_start = st.date_input("From", value=date.today(), key="rs_in_start")
+            in_start = st.date_input("From", key="rs_in_start")
         with ic2:
-            in_end = st.date_input("To", value=date.today() + timedelta(days=120), key="rs_in_end")
+            in_end = st.date_input("To", key="rs_in_end")
         with ic3:
-            in_nights = st.selectbox("Stay length", options=["all", 1, 2, 3, 7], index=0, key="rs_in_nights")
+            in_nights = st.selectbox("Stay length", options=["all", 1, 2, 3, 7], key="rs_in_nights")
         with ic4:
             price_basis = st.radio(
                 "Price basis", options=["Per night", "Total stay"], index=0, key="rs_price_basis",
