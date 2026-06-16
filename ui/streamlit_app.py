@@ -721,8 +721,8 @@ with tab4:
         )
     else:
         # ---------------- Competitor hotels ----------------
-        st.subheader("🏨 Competitor hotels")
-        st.caption("Add Elbitat (mark it as *self*) plus 5–15 competitors. Booking.com URL gives the most precise scrape.")
+        st.subheader("Step 1 — 🏨 Competitor hotels")
+        st.caption("Your tracked hotels. Add Elbitat (mark it *self*) plus 5–15 competitors. A Booking.com URL gives the most precise scrape.")
 
         with st.expander("➕ Add hotel"):
             with st.form("rs_add_hotel", clear_on_submit=True):
@@ -774,7 +774,11 @@ with tab4:
         st.divider()
 
         # ---------------- Run a price check ----------------
-        st.subheader("▶️ Run a price check")
+        st.subheader("Step 2 — ▶️ Fetch prices (runs Apify)")
+        st.caption(
+            "Pick which **future check-in dates** to collect prices for, then click the button. "
+            "This calls Apify and can take a couple of minutes. Use this when you want fresh data."
+        )
         rc1, rc2, rc3 = st.columns(3)
         with rc1:
             rs_start = st.date_input("From check-in", value=date.today() + timedelta(days=14), key="rs_start")
@@ -805,20 +809,29 @@ with tab4:
                             adults=int(rs_adults), children=int(rs_children), wait=True,
                         )
                         ok = sum(1 for r in results if r.get("status") == "succeeded")
-                        st.success(f"Done. {ok}/{len(results)} dates returned data.")
+                        st.success(f"Done. {ok}/{len(results)} dates returned data. Results below now show these dates.")
                         st.dataframe(pd.DataFrame(results), use_container_width=True, hide_index=True)
+                        # Auto-point the results view at the dates we just scraped, so the user
+                        # doesn't have to re-select them. (Set before those widgets are created.)
+                        st.session_state["rs_in_start"] = rs_start
+                        st.session_state["rs_in_end"] = rs_end
+                        st.session_state["rs_in_nights"] = int(rs_nights)
                     except Exception as e:
                         st.error(f"Error: {e}")
 
         st.divider()
 
         # ---------------- Insights table ----------------
-        st.subheader("📊 Elbitat vs competitors")
+        st.subheader("Step 3 — 📊 Results: Elbitat vs competitors")
+        st.caption(
+            "Shows prices **already collected** (no Apify cost). After a scrape this jumps to the "
+            "dates you just fetched; widen the range to review everything you've gathered over time."
+        )
         ic1, ic2, ic3 = st.columns(3)
         with ic1:
             in_start = st.date_input("From", value=date.today(), key="rs_in_start")
         with ic2:
-            in_end = st.date_input("To", value=date.today() + timedelta(days=90), key="rs_in_end")
+            in_end = st.date_input("To", value=date.today() + timedelta(days=120), key="rs_in_end")
         with ic3:
             in_nights = st.selectbox("Stay length", options=["all", 1, 2, 3, 7], index=0, key="rs_in_nights")
 
