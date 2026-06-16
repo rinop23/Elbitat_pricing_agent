@@ -867,6 +867,43 @@ with tab4:
 
         st.divider()
 
+        # ---------------- Per-hotel price grid ----------------
+        st.subheader("🏨 Price per hotel, per day")
+        st.caption("Latest scraped price for each hotel on each check-in date. Blank = sold out / no availability.")
+        try:
+            matrix = rss.get_price_matrix(
+                start_date=in_start, end_date=in_end,
+                nights=None if in_nights == "all" else int(in_nights),
+            )
+        except Exception as e:
+            matrix = []
+            st.error(f"Could not load price grid: {e}")
+
+        if not matrix:
+            st.info("No per-hotel observations yet for this filter.")
+        else:
+            mdf = pd.DataFrame(matrix)
+            # Put Elbitat first among the columns.
+            order = (
+                mdf[["hotel_name", "is_self"]].drop_duplicates()
+                .sort_values(["is_self", "hotel_name"], ascending=[False, True])["hotel_name"].tolist()
+            )
+            grid = mdf.pivot_table(
+                index="check_in", columns="hotel_name", values="price_amount", aggfunc="first"
+            )
+            grid = grid.reindex(columns=[c for c in order if c in grid.columns])
+            grid = grid.sort_index()
+            st.dataframe(grid, use_container_width=True)
+            st.download_button(
+                "Download price grid (CSV)",
+                data=grid.to_csv().encode("utf-8"),
+                file_name="elbitat_price_grid.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        st.divider()
+
         # ---------------- Recent runs ----------------
         with st.expander("🛰️ Recent scrape runs"):
             try:

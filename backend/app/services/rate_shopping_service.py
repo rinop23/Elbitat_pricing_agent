@@ -246,6 +246,19 @@ def _first(item: Dict[str, Any], keys: List[str]) -> Any:
     return None
 
 
+_CURRENCY_SYMBOLS = {"€": "EUR", "£": "GBP", "$": "USD", "CHF": "CHF"}
+
+
+def _normalize_currency(raw: Any, default: str) -> str:
+    """Map a currency symbol/code to an ISO code, falling back to the default."""
+    s = str(raw or "").strip()
+    if not s:
+        return default
+    if s in _CURRENCY_SYMBOLS:
+        return _CURRENCY_SYMBOLS[s]
+    return s[:8] if s.isalpha() else default
+
+
 def _to_float_price(raw: Any) -> Optional[float]:
     """Parse a price that may be a number, '€1.234,50', '1,234.50', or 'EUR 120'."""
     if raw is None:
@@ -295,7 +308,7 @@ def normalise_item(
     price = _to_float_price(_first(item, ["price", "priceText", "minPrice", "totalPrice"]))
     if price is None and room_prices:
         price = min(room_prices)
-    currency = _first(item, ["currency", "currencyCode"]) or default_currency
+    currency = _normalize_currency(_first(item, ["currency", "currencyCode"]), default_currency)
 
     # Availability: explicit flag if present, else any bookable room, else infer from price.
     avail_raw = _first(item, ["available", "isAvailable", "hasAvailability"])
@@ -324,7 +337,7 @@ def normalise_item(
         "guests_children": search_params["children"],
         "room_type": room_type,
         "price_amount": price,
-        "currency": str(currency)[:8],
+        "currency": currency,
         "available": available,
         "cancellation_policy": _first(item, ["cancellationPolicy", "freeCancellation"]),
         "breakfast_included": breakfast if isinstance(breakfast, bool) else None,
@@ -780,6 +793,51 @@ def get_insights(
         r["median_trend_pct"] = round(trend * 100, 1) if trend is not None else None
         r["recommendation"] = recommend(r, trend)
     return rows
+
+
+def get_price_matrix(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    nights: Optional[int] = None,
+    adults: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Return the latest observed price for every hotel on every check-in date.
+
+    One row per (check_in, hotel) with the most recent observation, so the UI can pivot it
+    into a grid of dates x hotels. Sold-out dates come back with price = None.
+    """
+    clauses, params = [], []
+    if start_date:
+        clauses.append("check_in >= %s")
+        params.append(start_date)
+    if end_date:
+        clauses.append("check_in <= %s")
+        params.append(end_date)
+    if nights is not None:
+        clauses.append("nights = %s")
+        params.append(nights)
+    if adults is not None:
+        clauses.append("guests_adults = %s")
+        params.append(adults)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            f"""
+            SELECT DISTINCT ON (check_in, hotel_name)
+                check_in, hotel_name, is_self, nights, guests_adults,
+                price_amount, currency, available, observed_on
+            FROM rateshop.hotel_price_observations
+            {where}
+            ORDER BY check_in, hotel_name, observed_on DESC, scraped_at DESC
+            """,
+            params,
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
 
 
 def list_recent_runs(limit: int = 20) -> List[Dict[str, Any]]:
