@@ -1,4 +1,5 @@
 import os
+import io
 import pandas as pd
 import streamlit as st
 from datetime import date, timedelta
@@ -25,6 +26,70 @@ from backend.app.services.pricing_service import (  # noqa: E402
     get_recommendations,
 )
 from backend.app.core.config import AppConfig  # noqa: E402
+
+# Columns that are numeric but NOT money (so we don't apply a € format to them).
+_NON_MONEY_NUMERIC = {
+    "nights", "guests_adults", "guests_children",
+    "competitor_available_count", "competitor_total_count", "median_trend_pct",
+}
+
+
+def build_excel_report(sheets: dict) -> bytes:
+    """Build a formatted multi-sheet .xlsx from {sheet_name: DataFrame}.
+
+    Bold header row, frozen header, autofilter, auto-fit column widths, and a € number
+    format on price columns. Returns the file as bytes for st.download_button.
+    """
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        wb = writer.book
+        header_fmt = wb.add_format({
+            "bold": True, "bg_color": "#1F4E78", "font_color": "white",
+            "border": 1, "align": "center", "valign": "vcenter",
+        })
+        money_fmt = wb.add_format({"num_format": "€#,##0.00"})
+
+        for raw_name, df in sheets.items():
+            name = (str(raw_name)[:31]) or "Sheet"
+            if df is None or len(df) == 0:
+                pd.DataFrame({"info": ["No data for this filter"]}).to_excel(
+                    writer, sheet_name=name, index=False
+                )
+                continue
+
+            write_index = df.index.name is not None  # the price grid uses check_in as index
+            df.to_excel(writer, sheet_name=name, index=write_index)
+            ws = writer.sheets[name]
+            offset = 1 if write_index else 0
+            n_rows = df.shape[0]
+            n_cols = df.shape[1] + offset
+
+            # Re-write the header row with formatting.
+            if write_index:
+                ws.write(0, 0, df.index.name, header_fmt)
+            for c, col in enumerate(df.columns):
+                ws.write(0, c + offset, str(col), header_fmt)
+
+            ws.freeze_panes(1, 0)
+            ws.autofilter(0, 0, n_rows, n_cols - 1)
+
+            # Index column width.
+            if write_index:
+                idx_w = max([len(str(df.index.name or ""))] + [len(str(v)) for v in df.index]) + 2
+                ws.set_column(0, 0, min(idx_w, 40))
+
+            # Data columns: width + money format where appropriate.
+            for c, col in enumerate(df.columns):
+                series = df[col]
+                width = max([len(str(col))] + [len(str(v)) for v in series.head(300)]) + 2
+                is_money = (
+                    pd.api.types.is_numeric_dtype(series)
+                    and str(col).lower() not in _NON_MONEY_NUMERIC
+                )
+                ws.set_column(c + offset, c + offset, min(width, 40), money_fmt if is_money else None)
+
+    return buffer.getvalue()
+
 
 # Initialize local DB (SQLite) once
 init_db()
@@ -762,6 +827,8 @@ with tab4:
                 help="Booking.com returns the TOTAL price for the stay. 'Per night' divides it by the number of nights.",
             )
         per_night = price_basis == "Per night"
+        idf_export = None   # populated below; used by the Excel download
+        grid_export = None
 
         try:
             insights = rss.get_insights(
@@ -788,6 +855,7 @@ with tab4:
                 "median_trend_pct", "recommendation",
             ]
             idf = idf[[c for c in cols if c in idf.columns]]
+            idf_export = idf.copy()
             m1, m2, m3 = st.columns(3)
             with m1:
                 st.metric("Dates analysed", len(idf))
@@ -846,13 +914,28 @@ with tab4:
             grid = grid.reindex(columns=[c for c in order if c in grid.columns])
             grid = grid.sort_index()
             st.dataframe(grid, use_container_width=True)
-            st.download_button(
-                "Download price grid (CSV)",
-                data=grid.to_csv().encode("utf-8"),
-                file_name="elbitat_price_grid.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+            grid_export = grid.copy()
+
+        # ---------------- Excel download (formatted) ----------------
+        if idf_export is not None or grid_export is not None:
+            basis_label = "per night" if per_night else "total stay"
+            try:
+                xlsx_bytes = build_excel_report({
+                    "Elbitat vs competitors": idf_export,
+                    "Price per hotel": grid_export,
+                })
+                fname = f"elbitat_rate_shopping_{in_start}_{in_end}_{basis_label.replace(' ', '-')}.xlsx"
+                st.download_button(
+                    "⬇️ Download Excel report (formatted)",
+                    data=xlsx_bytes,
+                    file_name=fname,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                )
+                st.caption(f"Two sheets — comparison + per-hotel grid. Prices {basis_label}.")
+            except Exception as e:
+                st.error(f"Could not build Excel file: {e}")
 
         st.divider()
 

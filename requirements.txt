@@ -8,3 +8,4 @@ pandas==2.2.3
 requests==2.32.5
 odfpy==1.4.1
 psycopg2-binary==2.9.10
+XlsxWriter==3.2.0
