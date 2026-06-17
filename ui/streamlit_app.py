@@ -111,8 +111,9 @@ st.title("🏨 Hotel Pricing Agent")
 
 # Create tabs for different sections
 # Add a new tab for competitor price upload/analysis
-tab1, tab3, tab4, tab5 = st.tabs([
+tab1, tab_comp, tab3, tab4, tab5 = st.tabs([
     "📊 Pricing Dashboard",
+    "🏢 Competitors",
     "📥 Competitor Price Upload",
     "📈 Rate Shopping",
     "⚙️ Settings",
@@ -232,6 +233,76 @@ with tab1:
 
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
+
+# ==================== TAB: COMPETITORS ====================
+with tab_comp:
+    st.header("🏢 Competitors")
+    st.caption("The hotels tracked for rate shopping. Stored permanently in Supabase.")
+
+    try:
+        from backend.app.core import db as _cm_db  # noqa: E402
+        from backend.app.services import rate_shopping_service as _cm_rss  # noqa: E402
+        _cm_ok, _cm_err = True, None
+    except Exception as _e:  # pragma: no cover
+        _cm_ok, _cm_err = False, str(_e)
+
+    if not _cm_ok:
+        st.error(f"Dependencies unavailable. Run `pip install -r requirements.txt`.\n\n{_cm_err}")
+    elif not _cm_db.is_configured():
+        st.warning("⚙️ Set `SUPABASE_DB_URL` to manage competitors (see the Rate Shopping tab for setup).")
+    else:
+        st.markdown(
+            "Add **Elbitat** (tick *This is Elbitat*) plus 5–15 competitors. "
+            "A Booking.com hotel-page URL gives the most precise scrape."
+        )
+        with st.expander("➕ Add hotel", expanded=False):
+            with st.form("cm_add_hotel", clear_on_submit=True):
+                h_name = st.text_input("Name*", placeholder="e.g., Hotel Hermitage")
+                h_url = st.text_input("Booking.com URL", placeholder="https://www.booking.com/hotel/it/...")
+                h_loc = st.text_input("Location", value="Isola d'Elba")
+                h_self = st.checkbox("This is Elbitat (self)", value=False)
+                h_active = st.checkbox("Active", value=True)
+                h_notes = st.text_input("Notes", placeholder="optional")
+                if st.form_submit_button("Add hotel", type="primary"):
+                    if not h_name:
+                        st.error("Name is required.")
+                    else:
+                        try:
+                            _cm_rss.add_competitor_hotel(
+                                name=h_name, booking_url=h_url or None, location=h_loc or None,
+                                active=bool(h_active), is_self=bool(h_self), notes=h_notes or None,
+                            )
+                            st.success(f"Added {h_name}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+        st.divider()
+        try:
+            _cm_hotels = _cm_rss.list_competitor_hotels()
+        except Exception as e:
+            _cm_hotels = []
+            st.error(f"Could not load hotels: {e}")
+
+        if not _cm_hotels:
+            st.info("No hotels yet. Add Elbitat (as *self*) and a few competitors above.")
+        else:
+            for h in _cm_hotels:
+                c1, c2, c3 = st.columns([5, 2, 1])
+                with c1:
+                    tag = "⭐ SELF" if h["is_self"] else ("🟢" if h["active"] else "🔴")
+                    st.markdown(f"**{tag} {h['name']}**" + (f" — [link]({h['booking_url']})" if h.get("booking_url") else ""))
+                    if h.get("location"):
+                        st.caption(h["location"])
+                with c2:
+                    if st.button("Toggle active", key=f"cm_toggle_{h['id']}"):
+                        _cm_rss.update_competitor_hotel(h["id"], {"active": not h["active"]})
+                        st.rerun()
+                with c3:
+                    if st.button("🗑️", key=f"cm_del_{h['id']}"):
+                        _cm_rss.delete_competitor_hotel(int(h["id"]))
+                        st.rerun()
+
 
 # ==================== TAB 3: COMPETITOR PRICE UPLOAD ====================
 with tab3:
@@ -605,164 +676,71 @@ with tab4:
             "See `.env.example` and `RATE_SHOPPING_GUIDE.md`."
         )
     else:
-        # ---------------- Competitor hotels ----------------
-        st.subheader("Step 1 — 🏨 Competitor hotels")
-        st.caption("Your tracked hotels. Add Elbitat (mark it *self*) plus 5–15 competitors. A Booking.com URL gives the most precise scrape.")
-
-        with st.expander("➕ Add hotel"):
-            with st.form("rs_add_hotel", clear_on_submit=True):
-                h_name = st.text_input("Name*", placeholder="e.g., Hotel Hermitage")
-                h_url = st.text_input("Booking.com URL", placeholder="https://www.booking.com/hotel/it/...")
-                h_loc = st.text_input("Location", value="Isola d'Elba")
-                h_self = st.checkbox("This is Elbitat (self)", value=False)
-                h_active = st.checkbox("Active", value=True)
-                h_notes = st.text_input("Notes", placeholder="optional")
-                if st.form_submit_button("Add hotel", type="primary"):
-                    if not h_name:
-                        st.error("Name is required.")
-                    else:
-                        try:
-                            rss.add_competitor_hotel(
-                                name=h_name, booking_url=h_url or None, location=h_loc or None,
-                                active=bool(h_active), is_self=bool(h_self), notes=h_notes or None,
-                            )
-                            st.success(f"Added {h_name}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-
-        try:
-            hotels = rss.list_competitor_hotels()
-        except Exception as e:
-            hotels = []
-            st.error(f"Could not load hotels: {e}")
-
-        if not hotels:
-            st.info("No hotels yet. Add Elbitat (as *self*) and a few competitors above.")
-        else:
-            for h in hotels:
-                c1, c2, c3 = st.columns([5, 2, 1])
-                with c1:
-                    tag = "⭐ SELF" if h["is_self"] else ("🟢" if h["active"] else "🔴")
-                    st.markdown(f"**{tag} {h['name']}**" + (f" — [link]({h['booking_url']})" if h.get("booking_url") else ""))
-                    if h.get("location"):
-                        st.caption(h["location"])
-                with c2:
-                    if st.button("Toggle active", key=f"rs_toggle_{h['id']}"):
-                        rss.update_competitor_hotel(h["id"], {"active": not h["active"]})
-                        st.rerun()
-                with c3:
-                    if st.button("🗑️", key=f"rs_del_{h['id']}"):
-                        rss.delete_competitor_hotel(h["id"])
-                        st.rerun()
-
-        st.divider()
-
-        # ---------------- Run a price check ----------------
-        st.subheader("Step 2 — ▶️ Fetch prices (runs Apify)")
-        st.caption(
-            "Pick which **future check-in dates** to collect prices for, then click the button. "
-            "This calls Apify and can take a couple of minutes. Use this when you want fresh data."
-        )
-        rc1, rc2, rc3 = st.columns(3)
-        with rc1:
-            rs_start = st.date_input("From check-in", value=date.today() + timedelta(days=14), key="rs_start")
-        with rc2:
-            rs_end = st.date_input("To check-in", value=date.today() + timedelta(days=20), key="rs_end")
-        with rc3:
-            rs_nights = st.selectbox("Nights", options=[1, 2, 3, 7], index=0, key="rs_nights")
-        rc4, rc5 = st.columns(2)
-        with rc4:
-            rs_adults = st.selectbox("Adults", options=[1, 2, 3, 4], index=1, key="rs_adults")
-        with rc5:
-            rs_children = st.number_input("Children", min_value=0, max_value=6, value=0, key="rs_children")
-
-        st.caption(
-            f"Cost guards: ≤{rss.MAX_DATES_PER_MANUAL_RUN} dates per run, ≤{rss.MAX_COMPETITORS} competitors, "
-            f"≤{rss.MAX_HORIZON_DAYS}-day horizon, duplicate searches within "
-            f"{rss.DEDUP_WINDOW_HOURS}h are skipped. One Apify run per check-in date."
-        )
-
-        if st.button("🔄 Run price check", type="primary", use_container_width=True):
-            if rs_start > rs_end:
-                st.error("'From' must be on or before 'To'.")
-            else:
-                with st.spinner("Starting Apify runs and waiting briefly for results…"):
-                    try:
-                        # Brief wait catches fast runs inline; Apify queues the rest, which the
-                        # user pulls with the Sync button (avoids the page hanging for minutes).
-                        results = rss.run_price_check(
-                            start_date=rs_start, end_date=rs_end, nights=int(rs_nights),
-                            adults=int(rs_adults), children=int(rs_children),
-                            wait=True, poll_timeout_secs=90,
-                        )
-                        ok = sum(1 for r in results if r.get("status") == "succeeded")
-                        running = sum(1 for r in results if r.get("status") == "running")
-                        skipped = sum(1 for r in results if r.get("status") == "skipped")
-                        failed = sum(1 for r in results if r.get("status") == "failed")
-                        st.success(f"✅ Loaded {ok}/{len(results)} dates. Results below show these dates.")
-                        if running:
-                            st.info(
-                                f"⏳ {running} date(s) still running on Apify (it queues runs). "
-                                "Click **🔁 Sync latest runs** below in a minute to load them — click again if needed."
-                            )
-                        if skipped:
-                            st.caption(f"{skipped} date(s) skipped — already scraped in the last {rss.DEDUP_WINDOW_HOURS}h.")
-                        if failed:
-                            st.warning(f"{failed} date(s) failed to start.")
-                            st.dataframe(pd.DataFrame([r for r in results if r.get("status") == "failed"]),
-                                         use_container_width=True, hide_index=True)
-                        # Point the results view at the dates we just scraped.
-                        st.session_state["rs_in_start"] = rs_start
-                        st.session_state["rs_in_end"] = rs_end
-                        st.session_state["rs_in_nights"] = int(rs_nights)
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-
-        st.caption("After starting a check, wait ~1–2 min then click this to load the results (no new scraping cost):")
-        if st.button("🔁 Sync latest runs (no new scraping)", type="primary", use_container_width=True):
-            with st.spinner("Checking Apify for finished runs…"):
-                try:
-                    synced = rss.sync_pending_runs()
-                    if synced:
-                        done = sum(1 for s in synced if s.get("status") == "succeeded")
-                        still = sum(1 for s in synced if s.get("status") == "running")
-                        st.success(f"Checked {len(synced)} run(s): {done} loaded with data, {still} still running.")
-                        if still:
-                            st.caption("Some are still running on Apify — click Sync again in a minute.")
-                        st.dataframe(pd.DataFrame(synced), use_container_width=True, hide_index=True)
-                    else:
-                        st.info("No pending runs — everything is already synced.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-        st.divider()
-
-        # ---------------- Insights table ----------------
-        st.subheader("Step 3 — 📊 Results: Elbitat vs competitors")
-        st.caption(
-            "Shows prices **already collected** (no Apify cost). After a scrape this jumps to the "
-            "dates you just fetched; widen the range to review everything you've gathered over time."
-        )
-        # Initialise once so the run button can auto-jump these without the
-        # "value set via Session State API" warning (no value=/index= below).
-        st.session_state.setdefault("rs_in_start", date.today())
-        st.session_state.setdefault("rs_in_end", date.today() + timedelta(days=120))
-        st.session_state.setdefault("rs_in_nights", "all")
-
-        ic1, ic2, ic3, ic4 = st.columns(4)
+        # ---------------- 1. Choose dates ----------------
+        st.markdown("**1. Choose dates & options**")
+        ic1, ic2, ic3, ic4, ic5 = st.columns(5)
         with ic1:
-            in_start = st.date_input("From", key="rs_in_start")
+            in_start = st.date_input("From", value=date.today(), key="rs_in_start")
         with ic2:
-            in_end = st.date_input("To", key="rs_in_end")
+            in_end = st.date_input("To", value=date.today() + timedelta(days=90), key="rs_in_end")
         with ic3:
-            in_nights = st.selectbox("Stay length", options=["all", 1, 2, 3, 7], key="rs_in_nights")
+            in_nights = st.selectbox("Stay length", options=["all", 1, 2, 3, 7], index=0, key="rs_in_nights")
         with ic4:
+            in_adults = st.selectbox("Adults", options=[1, 2, 3, 4], index=1, key="rs_adults")
+        with ic5:
             price_basis = st.radio(
                 "Price basis", options=["Per night", "Total stay"], index=0, key="rs_price_basis",
                 help="Booking.com returns the TOTAL price for the stay. 'Per night' divides it by the number of nights.",
             )
         per_night = price_basis == "Per night"
+
+        # ---------------- Optional: collect fresh prices ----------------
+        with st.expander("🔄 Need fresh prices now? Collect from Booking.com for the dates above"):
+            st.caption(
+                "Prices are collected automatically every week — use this only for an on-demand refresh. "
+                f"Cost guards: ≤{rss.MAX_DATES_PER_MANUAL_RUN} dates/run, ≤{rss.MAX_COMPETITORS} competitors, "
+                f"duplicate searches within {rss.DEDUP_WINDOW_HOURS}h are skipped."
+            )
+            in_children = st.number_input("Children", min_value=0, max_value=6, value=0, key="rs_children")
+            fb1, fb2 = st.columns(2)
+            with fb1:
+                if st.button("🔄 Collect prices", type="primary", use_container_width=True):
+                    if in_start > in_end:
+                        st.error("'From' must be on or before 'To'.")
+                    else:
+                        nights_list = [1, 2] if in_nights == "all" else [int(in_nights)]
+                        with st.spinner("Starting Apify runs and waiting briefly…"):
+                            try:
+                                results = []
+                                for _n in nights_list:
+                                    results += rss.run_price_check(
+                                        start_date=in_start, end_date=in_end, nights=_n,
+                                        adults=int(in_adults), children=int(in_children),
+                                        wait=True, poll_timeout_secs=90,
+                                    )
+                                ok = sum(1 for r in results if r.get("status") == "succeeded")
+                                running = sum(1 for r in results if r.get("status") == "running")
+                                st.success(f"Loaded {ok}/{len(results)} date-runs.")
+                                if running:
+                                    st.info(f"⏳ {running} still running on Apify — click 'Sync latest' in ~1 min.")
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+            with fb2:
+                if st.button("🔁 Sync latest", use_container_width=True):
+                    with st.spinner("Checking Apify for finished runs…"):
+                        try:
+                            synced = rss.sync_pending_runs()
+                            if synced:
+                                done = sum(1 for s in synced if s.get("status") == "succeeded")
+                                still = sum(1 for s in synced if s.get("status") == "running")
+                                st.success(f"Checked {len(synced)}: {done} loaded, {still} still running.")
+                            else:
+                                st.info("No pending runs — all synced.")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+        st.divider()
+        st.markdown("**2. Your report** — review below and download as Excel")
         idf_export = None   # populated below; used by the Excel download
         grid_export = None
 
@@ -770,13 +748,14 @@ with tab4:
             insights = rss.get_insights(
                 start_date=in_start, end_date=in_end,
                 nights=None if in_nights == "all" else int(in_nights),
+                adults=int(in_adults),
             )
         except Exception as e:
             insights = []
             st.error(f"Could not load insights: {e}")
 
         if not insights:
-            st.info("No observations yet for this filter. Run a price check above.")
+            st.info("No data for these dates yet. Use '🔄 Collect prices' above, or wait for the weekly update.")
         else:
             idf = pd.DataFrame(insights)
             price_cols = ["elbitat_price", "competitor_min", "competitor_median", "competitor_max"]
@@ -828,6 +807,7 @@ with tab4:
             matrix = rss.get_price_matrix(
                 start_date=in_start, end_date=in_end,
                 nights=None if in_nights == "all" else int(in_nights),
+                adults=int(in_adults),
             )
         except Exception as e:
             matrix = []
