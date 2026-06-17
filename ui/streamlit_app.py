@@ -121,118 +121,143 @@ tab1, tab_comp, tab3, tab4, tab5 = st.tabs([
 
 # ==================== TAB 1: PRICING DASHBOARD ====================
 with tab1:
-    st.header("Generate Pricing Recommendations")
+    st.header("💶 Pricing recommendations")
+    st.caption(
+        "Suggests Elbitat rates from the **latest scraped competitor median**. "
+        "Choose how far above or below the median you want to price."
+    )
 
-    # Load defaults from config (local)
     cfg_obj = AppConfig()
     currency = cfg_obj.currency
-    default_horizon = int(cfg_obj.horizon_days)
-    default_occupancy = int(cfg_obj.occupancy)
+    try:
+        min_rate = float(cfg_obj.cfg.min_rate)
+        max_rate = float(cfg_obj.cfg.max_rate)
+    except Exception:
+        min_rate, max_rate = 0.0, 1_000_000.0
 
-    st.subheader("📅 Select Date Range")
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input(
-            "Start Date",
-            value=date.today(),
-            min_value=date.today(),
-            help="Select the start date for pricing analysis",
+    try:
+        from backend.app.core import db as _pd_db  # noqa: E402
+        from backend.app.services import rate_shopping_service as _pd_rss  # noqa: E402
+        _pd_ok = _pd_db.is_configured()
+        _pd_err = None
+    except Exception as _e:  # pragma: no cover
+        _pd_ok, _pd_err = False, str(_e)
+
+    if not _pd_ok:
+        st.warning(
+            "Recommendations use the scraped competitor data, so set up rate shopping first "
+            "(`SUPABASE_DB_URL`). See the **📈 Rate Shopping** tab."
+            + (f"\n\n{_pd_err}" if _pd_err else "")
         )
-    with col2:
-        end_date = st.date_input(
-            "End Date",
-            value=date.today() + timedelta(days=default_horizon),
-            min_value=date.today(),
-            help="Select the end date for pricing analysis",
+    else:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            p_start = st.date_input("From", value=date.today(), key="pd_start")
+        with c2:
+            p_end = st.date_input("To", value=date.today() + timedelta(days=90), key="pd_end")
+        with c3:
+            p_nights = st.selectbox("Stay length", options=[1, 2, 3, 7], index=1, key="pd_nights")
+        with c4:
+            p_adults = st.selectbox("Adults", options=[1, 2, 3, 4], index=1, key="pd_adults")
+        with c5:
+            p_basis = st.radio("Price basis", options=["Per night", "Total stay"], index=0, key="pd_basis")
+        per_night = p_basis == "Per night"
+
+        position = st.slider(
+            "Target vs competitor median (%)", min_value=-30, max_value=30, value=0, step=1, key="pd_position",
+            help="0 = match the median. +10 = price 10% above the median. -10 = 10% below.",
+        )
+        st.caption(
+            f"Guardrails from config/settings.yaml: min {currency}{min_rate:.0f} / max {currency}{max_rate:.0f} per night. "
+            "Recommendations are clamped to this range."
         )
 
-    st.subheader("🛏️ Room Configuration")
-    col3, col4 = st.columns(2)
-    with col3:
-        occupancy = st.selectbox(
-            "Room Type / Occupancy",
-            options=[1, 2, 3, 4],
-            index=[1, 2, 3, 4].index(default_occupancy) if default_occupancy in [1, 2, 3, 4] else 1,
-            help="Select the number of guests per room",
-            format_func=lambda x: {
-                1: "Single (1 guest)",
-                2: "Double (2 guests)",
-                3: "Triple (3 guests)",
-                4: "Family (4 guests)",
-            }.get(x, f"{x} guests"),
-        )
-    with col4:
-        dry_run = st.checkbox(
-            "DRY_RUN (do not push live)",
-            value=os.getenv("DRY_RUN", "true").lower() == "true",
-            help="When enabled, rates are not pushed to the booking system.",
-        )
+        try:
+            insights = _pd_rss.get_insights(
+                start_date=p_start, end_date=p_end, nights=int(p_nights), adults=int(p_adults)
+            )
+        except Exception as e:
+            insights = []
+            st.error(f"Could not load competitor data: {e}")
 
-    st.divider()
-
-    if st.button("🔄 Generate Pricing Recommendations", type="primary", use_container_width=True):
-        if start_date >= end_date:
-            st.error("⚠️ End date must be after start date!")
+        if not insights:
+            st.info("No competitor data for these dates yet. Collect prices in the 📈 Rate Shopping tab.")
         else:
-            with st.spinner("Running pricing locally..."):
+            factor = 1 + position / 100.0
+
+            def _disp(per_night_value, nights):
+                if per_night_value is None:
+                    return None
+                return round(per_night_value if per_night else per_night_value * nights, 2)
+
+            rows = []
+            for r in insights:
+                med_total = r.get("competitor_median")
+                if med_total is None:
+                    continue
+                n = r.get("nights") or 1
+                med_pn = float(med_total) / n
+                rec_pn = max(min_rate, min(med_pn * factor, max_rate))  # clamp to guardrails
+                cmin = r.get("competitor_min")
+                cmax = r.get("competitor_max")
+                cur = r.get("elbitat_price")
+                cur_pn = float(cur) / n if cur is not None else None
+                rec_disp = _disp(rec_pn, n)
+                cur_disp = _disp(cur_pn, n)
+                rows.append({
+                    "date": str(r["check_in"]),
+                    "competitor_min": _disp(float(cmin) / n, n) if cmin is not None else None,
+                    "competitor_median": _disp(med_pn, n),
+                    "competitor_max": _disp(float(cmax) / n, n) if cmax is not None else None,
+                    "current_elbitat": cur_disp,
+                    "recommended": rec_disp,
+                    "change_vs_current": (round(rec_disp - cur_disp, 2) if cur_disp is not None else None),
+                })
+
+            df = pd.DataFrame(rows)
+            if df.empty:
+                st.info("No competitor medians available for these dates.")
+            else:
+                basis_lbl = "per night" if per_night else "total stay"
+                m1, m2, m3 = st.columns(3)
+                with m1:
+                    st.metric("Dates", len(df))
+                with m2:
+                    st.metric(f"Avg recommended ({basis_lbl})", f"{currency}{df['recommended'].mean():.2f}")
+                with m3:
+                    chg = df["change_vs_current"].dropna()
+                    st.metric("Avg change vs current", f"{currency}{chg.mean():.2f}" if len(chg) else "—")
+
+                money = lambda label: st.column_config.NumberColumn(label, format="€%.2f")
+                st.dataframe(
+                    df, use_container_width=True, hide_index=True,
+                    column_config={
+                        "date": "Date",
+                        "competitor_min": money("Comp min"),
+                        "competitor_median": money("Comp median"),
+                        "competitor_max": money("Comp max"),
+                        "current_elbitat": money("Current Elbitat"),
+                        "recommended": money("Recommended"),
+                        "change_vs_current": money("Δ vs current"),
+                    },
+                )
+
                 try:
-                    run_id = create_run(
-                        start_date=start_date.isoformat(),
-                        end_date=end_date.isoformat(),
-                        dry_run=bool(dry_run),
-                        occupancy=int(occupancy),
+                    xlsx = build_excel_report({"Recommended rates": df})
+                    st.download_button(
+                        "⬇️ Download recommendations (Excel)",
+                        data=xlsx,
+                        file_name=f"elbitat_recommendations_{p_start}_{p_end}_{position:+d}pct.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary", use_container_width=True,
                     )
-
-                    recs = run_pricing(
-                        start_date=start_date.isoformat(),
-                        end_date=end_date.isoformat(),
-                        occupancy=int(occupancy),
-                    )
-                    save_recommendations(run_id, recs)
-
-                    df = pd.DataFrame(get_recommendations(run_id))
-                    if df.empty:
-                        st.warning("No recommendations returned.")
-                    else:
-                        df["date"] = pd.to_datetime(df["date"]).dt.date
-                        df = df.sort_values("date")
-
-                        st.success("✅ Recommendations generated successfully!")
-
-                        col_m1, col_m2, col_m3 = st.columns(3)
-                        with col_m1:
-                            st.metric("Total Days", len(df))
-                        with col_m2:
-                            st.metric("Avg. Recommended Rate", f"{currency}{df['recommended_rate'].mean():.2f}")
-                        with col_m3:
-                            st.metric("Avg. Lowest Competitor", f"{currency}{df['lowest_competitor'].mean():.2f}")
-
-                        st.subheader("📋 Detailed Recommendations")
-                        display_df = df.copy()
-                        display_df["date"] = display_df["date"].astype(str)
-                        display_df["recommended_rate"] = display_df["recommended_rate"].apply(lambda x: f"{currency}{x:.2f}")
-                        display_df["lowest_competitor"] = display_df["lowest_competitor"].apply(lambda x: f"{currency}{x:.2f}")
-
-                        st.dataframe(
-                            display_df,
-                            use_container_width=True,
-                            column_config={
-                                "date": "Date",
-                                "recommended_rate": "Recommended Rate",
-                                "lowest_competitor": "Lowest Competitor",
-                            },
-                            hide_index=True,
-                        )
-
-                        st.divider()
-                        st.subheader("📤 Push to Simple Booking")
-                        if dry_run:
-                            st.info("🔒 DRY_RUN enabled: pushing is disabled.")
-                        else:
-                            st.info("Push is only available via the FastAPI backend deployment.")
-
                 except Exception as e:
-                    st.error(f"❌ Error: {str(e)}")
+                    st.error(f"Could not build Excel file: {e}")
+
+                st.caption(
+                    "ℹ️ Pushing these rates to Booking.com requires the Simple Booking integration (parked for now). "
+                    "For now, use the Excel export or enter them in your channel manager."
+                )
 
 # ==================== TAB: COMPETITORS ====================
 with tab_comp:
