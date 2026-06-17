@@ -31,7 +31,7 @@ jobs:
 
       - name: Build report (per night, 2-night stays)
         if: always()
-        run: python scripts/sync_apify.py report --days 90 --nights 2 --per-night --out report.csv --summary-out report.txt
+        run: python scripts/sync_apify.py report --days 90 --nights 2 --per-night --out report.csv --summary-out report.txt --xlsx-out report.xlsx
 
       # Email is disabled for now. The report is uploaded as a downloadable artifact —
       # open the workflow run on the Actions tab and download "rate-shopping-report".
@@ -41,6 +41,7 @@ jobs:
         with:
           name: rate-shopping-report
           path: |
+            report.xlsx
             report.csv
             report.txt
           retention-days: 30

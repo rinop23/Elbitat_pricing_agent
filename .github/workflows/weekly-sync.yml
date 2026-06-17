@@ -37,7 +37,7 @@ jobs:
 
       - name: Build report (per night, 2-night stays)
         if: always()
-        run: python scripts/sync_apify.py report --days 90 --nights 2 --per-night --out report.csv --summary-out report.txt
+        run: python scripts/sync_apify.py report --days 90 --nights 2 --per-night --out report.csv --summary-out report.txt --xlsx-out report.xlsx
 
       - name: Upload report artifact
         if: always()
@@ -45,6 +45,7 @@ jobs:
         with:
           name: rate-shopping-report
           path: |
+            report.xlsx
             report.csv
             report.txt
           retention-days: 30

@@ -148,6 +148,37 @@ def cmd_report(args: argparse.Namespace) -> int:
         for r in rows:
             w.writerow(r)
 
+    # Formatted Excel (same look as the app): comparison sheet + per-hotel price grid.
+    if args.xlsx_out:
+        try:
+            import pandas as pd
+            from backend.app.services.report_export import build_excel_report
+
+            comp_df = pd.DataFrame(rows)[[c for c in cols if rows and c in rows[0]]] if rows else pd.DataFrame()
+
+            matrix = rss.get_price_matrix(start_date=start, end_date=end, nights=nights)
+            grid_df = pd.DataFrame()
+            if matrix:
+                mdf = pd.DataFrame(matrix)
+                if args.per_night and "nights" in mdf.columns:
+                    mdf["price_amount"] = (pd.to_numeric(mdf["price_amount"], errors="coerce") / mdf["nights"]).round(2)
+                order = (
+                    mdf[["hotel_name", "is_self"]].drop_duplicates()
+                    .sort_values(["is_self", "hotel_name"], ascending=[False, True])["hotel_name"].tolist()
+                )
+                grid_df = mdf.pivot_table(index="check_in", columns="hotel_name",
+                                          values="price_amount", aggfunc="first")
+                grid_df = grid_df.reindex(columns=[c for c in order if c in grid_df.columns]).sort_index()
+
+            with open(args.xlsx_out, "wb") as f:
+                f.write(build_excel_report({
+                    "Elbitat vs competitors": comp_df,
+                    "Price per hotel": grid_df,
+                }))
+            print(f"Wrote Excel report -> {args.xlsx_out}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"! Could not build Excel report: {exc}")
+
     above = sum(1 for r in rows if r.get("elbitat_position") == "above")
     flagged = [r for r in rows if str(r.get("recommendation", "")).startswith(("🔴", "🟠", "⚠️"))]
     basis = "per night" if args.per_night else "total stay"
@@ -202,6 +233,7 @@ def main() -> int:
     p_report.add_argument("--per-night", dest="per_night", action="store_true")
     p_report.add_argument("--out", default="report.csv")
     p_report.add_argument("--summary-out", dest="summary_out", default="report.txt")
+    p_report.add_argument("--xlsx-out", dest="xlsx_out", default="report.xlsx")
     p_report.set_defaults(func=cmd_report)
 
     args = parser.parse_args()
