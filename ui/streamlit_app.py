@@ -172,15 +172,22 @@ with tab1:
             "Recommendations are clamped to this range."
         )
 
-        try:
-            insights = _pd_rss.get_insights(
-                start_date=p_start, end_date=p_end, nights=int(p_nights), adults=int(p_adults)
-            )
-        except Exception as e:
-            insights = []
-            st.error(f"Could not load competitor data: {e}")
+        if st.button("💶 Calculate recommendations", type="primary", use_container_width=True, key="pd_calc_btn"):
+            st.session_state["pd_calc"] = True
+        _pd_show = bool(st.session_state.get("pd_calc"))
 
-        if not insights:
+        insights = []
+        if _pd_show:
+            try:
+                insights = _pd_rss.get_insights(
+                    start_date=p_start, end_date=p_end, nights=int(p_nights), adults=int(p_adults)
+                )
+            except Exception as e:
+                st.error(f"Could not load competitor data: {e}")
+
+        if not _pd_show:
+            st.info("Set your options above, then click **💶 Calculate recommendations**.")
+        elif not insights:
             st.info("No competitor data for these dates yet. Collect prices in the 📈 Rate Shopping tab.")
         else:
             factor = 1 + position / 100.0
@@ -766,21 +773,29 @@ with tab4:
 
         st.divider()
         st.markdown("**2. Your report** — review below and download as Excel")
+        if st.button("📊 Show / refresh report", type="primary", use_container_width=True, key="rs_show_btn"):
+            st.session_state["rs_show"] = True
+        _rs_show = bool(st.session_state.get("rs_show"))
+        if not _rs_show:
+            st.info("Choose your dates above, then click **📊 Show / refresh report** to load the data.")
+
         idf_export = None   # populated below; used by the Excel download
         grid_export = None
 
-        try:
-            insights = rss.get_insights(
-                start_date=in_start, end_date=in_end,
-                nights=None if in_nights == "all" else int(in_nights),
-                adults=int(in_adults),
-            )
-        except Exception as e:
-            insights = []
-            st.error(f"Could not load insights: {e}")
+        insights = []
+        if _rs_show:
+            try:
+                insights = rss.get_insights(
+                    start_date=in_start, end_date=in_end,
+                    nights=None if in_nights == "all" else int(in_nights),
+                    adults=int(in_adults),
+                )
+            except Exception as e:
+                st.error(f"Could not load insights: {e}")
 
         if not insights:
-            st.info("No data for these dates yet. Use '🔄 Collect prices' above, or wait for the weekly update.")
+            if _rs_show:
+                st.info("No data for these dates yet. Use '🔄 Collect prices' above, or wait for the weekly update.")
         else:
             idf = pd.DataFrame(insights)
             price_cols = ["elbitat_price", "competitor_min", "competitor_median", "competitor_max"]
@@ -828,18 +843,20 @@ with tab4:
             f"Latest scraped price ({'per night' if per_night else 'total for the stay'}) for each hotel "
             "on each check-in date. Blank = sold out / no availability."
         )
-        try:
-            matrix = rss.get_price_matrix(
-                start_date=in_start, end_date=in_end,
-                nights=None if in_nights == "all" else int(in_nights),
-                adults=int(in_adults),
-            )
-        except Exception as e:
-            matrix = []
-            st.error(f"Could not load price grid: {e}")
+        matrix = []
+        if _rs_show:
+            try:
+                matrix = rss.get_price_matrix(
+                    start_date=in_start, end_date=in_end,
+                    nights=None if in_nights == "all" else int(in_nights),
+                    adults=int(in_adults),
+                )
+            except Exception as e:
+                st.error(f"Could not load price grid: {e}")
 
         if not matrix:
-            st.info("No per-hotel observations yet for this filter.")
+            if _rs_show:
+                st.info("No per-hotel observations yet for this filter.")
         else:
             mdf = pd.DataFrame(matrix)
             if per_night and "nights" in mdf.columns:
@@ -883,7 +900,7 @@ with tab4:
         # ---------------- Recent runs ----------------
         with st.expander("🛰️ Recent scrape runs"):
             try:
-                runs = rss.list_recent_runs(limit=15)
+                runs = rss.list_recent_runs(limit=15) if _rs_show else []
                 if runs:
                     rdf = pd.DataFrame(runs)[
                         [c for c in ["id", "status", "item_count", "cost_usd", "started_at", "finished_at", "error_message"]
@@ -891,7 +908,7 @@ with tab4:
                     ]
                     st.dataframe(rdf, use_container_width=True, hide_index=True)
                 else:
-                    st.caption("No runs yet.")
+                    st.caption("No runs yet." if _rs_show else "Click 'Show / refresh report' above to load.")
             except Exception as e:
                 st.error(f"Could not load runs: {e}")
 
