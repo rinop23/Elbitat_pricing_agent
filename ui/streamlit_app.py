@@ -111,159 +111,11 @@ st.title("🏨 Hotel Pricing Agent")
 
 # Create tabs for different sections
 # Add a new tab for competitor price upload/analysis
-tab1, tab_comp, tab4, tab5 = st.tabs([
-    "📊 Pricing Dashboard",
+tab_rates, tab_comp, tab5 = st.tabs([
+    "📈 Rate Shopping & Pricing",
     "🏢 Competitors",
-    "📈 Rate Shopping",
     "⚙️ Settings",
 ])
-
-# ==================== TAB 1: PRICING DASHBOARD ====================
-with tab1:
-    st.header("💶 Pricing recommendations")
-    st.caption(
-        "Suggests Elbitat rates from the **latest scraped competitor median**. "
-        "Choose how far above or below the median you want to price."
-    )
-
-    cfg_obj = AppConfig()
-    currency = cfg_obj.currency
-    try:
-        min_rate = float(cfg_obj.cfg.min_rate)
-        max_rate = float(cfg_obj.cfg.max_rate)
-    except Exception:
-        min_rate, max_rate = 0.0, 1_000_000.0
-
-    try:
-        from backend.app.core import db as _pd_db  # noqa: E402
-        from backend.app.services import rate_shopping_service as _pd_rss  # noqa: E402
-        _pd_ok = _pd_db.is_configured()
-        _pd_err = None
-    except Exception as _e:  # pragma: no cover
-        _pd_ok, _pd_err = False, str(_e)
-
-    if not _pd_ok:
-        st.warning(
-            "Recommendations use the scraped competitor data, so set up rate shopping first "
-            "(`SUPABASE_DB_URL`). See the **📈 Rate Shopping** tab."
-            + (f"\n\n{_pd_err}" if _pd_err else "")
-        )
-    else:
-        c1, c2, c3, c4, c5 = st.columns(5)
-        with c1:
-            p_start = st.date_input("From", value=date.today(), key="pd_start")
-        with c2:
-            p_end = st.date_input("To", value=date.today() + timedelta(days=90), key="pd_end")
-        with c3:
-            p_nights = st.selectbox("Stay length", options=[1, 2, 3, 7], index=1, key="pd_nights")
-        with c4:
-            p_adults = st.selectbox("Adults", options=[1, 2, 3, 4], index=1, key="pd_adults")
-        with c5:
-            p_basis = st.radio("Price basis", options=["Per night", "Total stay"], index=0, key="pd_basis")
-        per_night = p_basis == "Per night"
-
-        position = st.slider(
-            "Target vs competitor median (%)", min_value=-30, max_value=30, value=0, step=1, key="pd_position",
-            help="0 = match the median. +10 = price 10% above the median. -10 = 10% below.",
-        )
-        st.caption(
-            f"Guardrails from config/settings.yaml: min {currency}{min_rate:.0f} / max {currency}{max_rate:.0f} per night. "
-            "Recommendations are clamped to this range."
-        )
-
-        if st.button("💶 Calculate recommendations", type="primary", use_container_width=True, key="pd_calc_btn"):
-            st.session_state["pd_calc"] = True
-        _pd_show = bool(st.session_state.get("pd_calc"))
-
-        insights = []
-        if _pd_show:
-            try:
-                insights = _pd_rss.get_insights(
-                    start_date=p_start, end_date=p_end, nights=int(p_nights), adults=int(p_adults)
-                )
-            except Exception as e:
-                st.error(f"Could not load competitor data: {e}")
-
-        if not _pd_show:
-            st.info("Set your options above, then click **💶 Calculate recommendations**.")
-        elif not insights:
-            st.info("No competitor data for these dates yet. Collect prices in the 📈 Rate Shopping tab.")
-        else:
-            factor = 1 + position / 100.0
-
-            def _disp(per_night_value, nights):
-                if per_night_value is None:
-                    return None
-                return round(per_night_value if per_night else per_night_value * nights, 2)
-
-            rows = []
-            for r in insights:
-                med_total = r.get("competitor_median")
-                if med_total is None:
-                    continue
-                n = r.get("nights") or 1
-                med_pn = float(med_total) / n
-                rec_pn = max(min_rate, min(med_pn * factor, max_rate))  # clamp to guardrails
-                cmin = r.get("competitor_min")
-                cmax = r.get("competitor_max")
-                cur = r.get("elbitat_price")
-                cur_pn = float(cur) / n if cur is not None else None
-                rec_disp = _disp(rec_pn, n)
-                cur_disp = _disp(cur_pn, n)
-                rows.append({
-                    "date": str(r["check_in"]),
-                    "competitor_min": _disp(float(cmin) / n, n) if cmin is not None else None,
-                    "competitor_median": _disp(med_pn, n),
-                    "competitor_max": _disp(float(cmax) / n, n) if cmax is not None else None,
-                    "current_elbitat": cur_disp,
-                    "recommended": rec_disp,
-                    "change_vs_current": (round(rec_disp - cur_disp, 2) if cur_disp is not None else None),
-                })
-
-            df = pd.DataFrame(rows)
-            if df.empty:
-                st.info("No competitor medians available for these dates.")
-            else:
-                basis_lbl = "per night" if per_night else "total stay"
-                m1, m2, m3 = st.columns(3)
-                with m1:
-                    st.metric("Dates", len(df))
-                with m2:
-                    st.metric(f"Avg recommended ({basis_lbl})", f"{currency}{df['recommended'].mean():.2f}")
-                with m3:
-                    chg = df["change_vs_current"].dropna()
-                    st.metric("Avg change vs current", f"{currency}{chg.mean():.2f}" if len(chg) else "—")
-
-                money = lambda label: st.column_config.NumberColumn(label, format="€%.2f")
-                st.dataframe(
-                    df, use_container_width=True, hide_index=True,
-                    column_config={
-                        "date": "Date",
-                        "competitor_min": money("Comp min"),
-                        "competitor_median": money("Comp median"),
-                        "competitor_max": money("Comp max"),
-                        "current_elbitat": money("Current Elbitat"),
-                        "recommended": money("Recommended"),
-                        "change_vs_current": money("Δ vs current"),
-                    },
-                )
-
-                try:
-                    xlsx = build_excel_report({"Recommended rates": df})
-                    st.download_button(
-                        "⬇️ Download recommendations (Excel)",
-                        data=xlsx,
-                        file_name=f"elbitat_recommendations_{p_start}_{p_end}_{position:+d}pct.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary", use_container_width=True,
-                    )
-                except Exception as e:
-                    st.error(f"Could not build Excel file: {e}")
-
-                st.caption(
-                    "ℹ️ Pushing these rates to Booking.com requires the Simple Booking integration (parked for now). "
-                    "For now, use the Excel export or enter them in your channel manager."
-                )
 
 # ==================== TAB: COMPETITORS ====================
 with tab_comp:
@@ -335,10 +187,10 @@ with tab_comp:
                         st.rerun()
 
 
-# ==================== TAB 4: RATE SHOPPING ====================
-with tab4:
-    st.header("Rate Shopping — Elbitat vs Competitors")
-    st.caption("Live competitor pricing scraped via Apify (server-side) and stored in Supabase.")
+# ==================== TAB: RATE SHOPPING & PRICING ====================
+with tab_rates:
+    st.header("📈 Rate Shopping & Pricing")
+    st.caption("Competitor prices scraped via Apify and stored in Supabase. Compare the market, or get a price recommendation.")
 
     # Lazy imports so the other tabs still work if Supabase/psycopg2 isn't configured locally.
     try:
@@ -381,6 +233,31 @@ with tab4:
                 help="Booking.com returns the TOTAL price for the stay. 'Per night' divides it by the number of nights.",
             )
         per_night = price_basis == "Per night"
+
+        mode = st.radio(
+            "View", options=["📊 Compare market", "💶 Price recommendation"], index=0,
+            horizontal=True, key="rs_mode",
+            help="Compare = Elbitat vs competitors. Recommendation = a suggested rate from the median.",
+        )
+        recommend_mode = mode.startswith("💶")
+        position = 0
+        currency = AppConfig().currency
+        min_rate, max_rate = 0.0, 1_000_000.0
+        if recommend_mode:
+            try:
+                _cfg = AppConfig()
+                min_rate = float(_cfg.cfg.min_rate)
+                max_rate = float(_cfg.cfg.max_rate)
+            except Exception:
+                pass
+            position = st.slider(
+                "Target vs competitor median (%)", min_value=-30, max_value=30, value=0, step=1, key="rs_position",
+                help="0 = match the median. +10 = price 10% above. -10 = 10% below.",
+            )
+            st.caption(
+                f"Recommendations are clamped to settings.yaml guardrails: "
+                f"min {currency}{min_rate:.0f} / max {currency}{max_rate:.0f} per night."
+            )
 
         # ---------------- Optional: collect fresh prices ----------------
         with st.expander("🔄 Need fresh prices now? Collect from Booking.com for the dates above"):
@@ -449,10 +326,77 @@ with tab4:
             except Exception as e:
                 st.error(f"Could not load insights: {e}")
 
-        if not insights:
-            if _rs_show:
-                st.info("No data for these dates yet. Use '🔄 Collect prices' above, or wait for the weekly update.")
-        else:
+        if _rs_show and not insights:
+            st.info("No data for these dates yet. Use '🔄 Collect prices' above, or wait for the weekly update.")
+
+        # ---------------- Recommendation view ----------------
+        elif insights and recommend_mode:
+            factor = 1 + position / 100.0
+
+            def _disp(pn, n):
+                if pn is None:
+                    return None
+                return round(pn if per_night else pn * n, 2)
+
+            rec_rows = []
+            for r in insights:
+                med_total = r.get("competitor_median")
+                if med_total is None:
+                    continue
+                n = r.get("nights") or 1
+                med_pn = float(med_total) / n
+                rec_pn = max(min_rate, min(med_pn * factor, max_rate))  # clamp to guardrails
+                cur = r.get("elbitat_price")
+                cur_pn = float(cur) / n if cur is not None else None
+                rec_disp = _disp(rec_pn, n)
+                cur_disp = _disp(cur_pn, n)
+                rec_rows.append({
+                    "date": str(r["check_in"]),
+                    "nights": n,
+                    "competitor_median": _disp(med_pn, n),
+                    "current_elbitat": cur_disp,
+                    "recommended": rec_disp,
+                    "change_vs_current": (round(rec_disp - cur_disp, 2) if cur_disp is not None else None),
+                })
+
+            rec_df = pd.DataFrame(rec_rows)
+            if rec_df.empty:
+                st.info("No competitor medians available for these dates.")
+            else:
+                basis_lbl = "per night" if per_night else "total stay"
+                mr1, mr2, mr3 = st.columns(3)
+                mr1.metric("Dates", len(rec_df))
+                mr2.metric(f"Avg recommended ({basis_lbl})", f"{currency}{rec_df['recommended'].mean():.2f}")
+                _chg = rec_df["change_vs_current"].dropna()
+                mr3.metric("Avg change vs current", f"{currency}{_chg.mean():.2f}" if len(_chg) else "—")
+                _money = lambda label: st.column_config.NumberColumn(label, format="€%.2f")
+                st.dataframe(
+                    rec_df, use_container_width=True, hide_index=True,
+                    column_config={
+                        "date": "Date", "nights": "Nights",
+                        "competitor_median": _money("Comp median"),
+                        "current_elbitat": _money("Current Elbitat"),
+                        "recommended": _money("Recommended"),
+                        "change_vs_current": _money("Δ vs current"),
+                    },
+                )
+                try:
+                    xlsx = build_excel_report({"Recommended rates": rec_df})
+                    st.download_button(
+                        "⬇️ Download recommendations (Excel)", data=xlsx,
+                        file_name=f"elbitat_recommendations_{in_start}_{in_end}_{position:+d}pct.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary", use_container_width=True,
+                    )
+                except Exception as e:
+                    st.error(f"Could not build Excel file: {e}")
+                st.caption(
+                    "ℹ️ Pushing to Booking.com needs the Simple Booking integration (parked). "
+                    "Use the Excel export for now."
+                )
+
+        # ---------------- Compare view ----------------
+        elif insights:
             idf = pd.DataFrame(insights)
             price_cols = ["elbitat_price", "competitor_min", "competitor_median", "competitor_max"]
             if per_night and "nights" in idf.columns:
@@ -491,16 +435,13 @@ with tab4:
                 },
             )
 
-        st.divider()
-
-        # ---------------- Per-hotel price grid ----------------
-        st.subheader("🏨 Price per hotel, per day")
-        st.caption(
-            f"Latest scraped price ({'per night' if per_night else 'total for the stay'}) for each hotel "
-            "on each check-in date. Blank = sold out / no availability."
-        )
-        matrix = []
-        if _rs_show:
+            # ---- Per-hotel price grid ----
+            st.divider()
+            st.subheader("🏨 Price per hotel, per day")
+            st.caption(
+                f"Latest scraped price ({'per night' if per_night else 'total for the stay'}) for each hotel "
+                "on each check-in date. Blank = sold out / no availability."
+            )
             try:
                 matrix = rss.get_price_matrix(
                     start_date=in_start, end_date=in_end,
@@ -508,48 +449,42 @@ with tab4:
                     adults=int(in_adults),
                 )
             except Exception as e:
+                matrix = []
                 st.error(f"Could not load price grid: {e}")
 
-        if not matrix:
-            if _rs_show:
+            if not matrix:
                 st.info("No per-hotel observations yet for this filter.")
-        else:
-            mdf = pd.DataFrame(matrix)
-            if per_night and "nights" in mdf.columns:
-                mdf["price_amount"] = (pd.to_numeric(mdf["price_amount"], errors="coerce") / mdf["nights"]).round(2)
-            # Put Elbitat first among the columns.
-            order = (
-                mdf[["hotel_name", "is_self"]].drop_duplicates()
-                .sort_values(["is_self", "hotel_name"], ascending=[False, True])["hotel_name"].tolist()
-            )
-            grid = mdf.pivot_table(
-                index="check_in", columns="hotel_name", values="price_amount", aggfunc="first"
-            )
-            grid = grid.reindex(columns=[c for c in order if c in grid.columns])
-            grid = grid.sort_index()
-            st.dataframe(grid, use_container_width=True)
-            grid_export = grid.copy()
-
-        # ---------------- Excel download (formatted) ----------------
-        if idf_export is not None or grid_export is not None:
-            basis_label = "per night" if per_night else "total stay"
-            try:
-                xlsx_bytes = build_excel_report({
-                    "Elbitat vs competitors": idf_export,
-                    "Price per hotel": grid_export,
-                })
-                fname = f"elbitat_rate_shopping_{in_start}_{in_end}_{basis_label.replace(' ', '-')}.xlsx"
-                st.download_button(
-                    "⬇️ Download Excel report (formatted)",
-                    data=xlsx_bytes,
-                    file_name=fname,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True,
+            else:
+                mdf = pd.DataFrame(matrix)
+                if per_night and "nights" in mdf.columns:
+                    mdf["price_amount"] = (pd.to_numeric(mdf["price_amount"], errors="coerce") / mdf["nights"]).round(2)
+                order = (
+                    mdf[["hotel_name", "is_self"]].drop_duplicates()
+                    .sort_values(["is_self", "hotel_name"], ascending=[False, True])["hotel_name"].tolist()
                 )
-                st.caption(f"Two sheets — comparison + per-hotel grid. Prices {basis_label}.")
-            except Exception as e:
-                st.error(f"Could not build Excel file: {e}")
+                grid = mdf.pivot_table(index="check_in", columns="hotel_name", values="price_amount", aggfunc="first")
+                grid = grid.reindex(columns=[c for c in order if c in grid.columns]).sort_index()
+                st.dataframe(grid, use_container_width=True)
+                grid_export = grid.copy()
+
+            # ---- Excel download (formatted) ----
+            if idf_export is not None or grid_export is not None:
+                basis_label = "per night" if per_night else "total stay"
+                try:
+                    xlsx_bytes = build_excel_report({
+                        "Elbitat vs competitors": idf_export,
+                        "Price per hotel": grid_export,
+                    })
+                    st.download_button(
+                        "⬇️ Download Excel report (formatted)",
+                        data=xlsx_bytes,
+                        file_name=f"elbitat_rate_shopping_{in_start}_{in_end}_{basis_label.replace(' ', '-')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary", use_container_width=True,
+                    )
+                    st.caption(f"Two sheets — comparison + per-hotel grid. Prices {basis_label}.")
+                except Exception as e:
+                    st.error(f"Could not build Excel file: {e}")
 
         st.divider()
 
